@@ -1,0 +1,4 @@
+pyserial>=3.5
+aiohttp>=3.9
+matplotlib>=3.8  # only for `python -m stresskit plot`
+pytest>=8        # only for the tests

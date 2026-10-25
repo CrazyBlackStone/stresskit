@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stress Monitor</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f3f2ee;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #eb6834;
+  --good: #0ca30c; --good-text: #006300; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --band-good: rgba(12,163,12,0.07); --band-warn: rgba(250,178,25,0.10); --band-crit: rgba(208,59,59,0.08);
+  --shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
+    --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926; --good-text: #0ca30c;
+    --band-good: rgba(12,163,12,0.10); --band-warn: rgba(250,178,25,0.10); --band-crit: rgba(208,59,59,0.12);
+    --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
+  --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --series-2: #d95926; --good-text: #0ca30c;
+  --band-good: rgba(12,163,12,0.10); --band-warn: rgba(250,178,25,0.10); --band-crit: rgba(208,59,59,0.12);
+  --shadow: none;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--surface);
+}
+header h1 { font-size: 17px; margin: 0 8px 0 0; font-weight: 650; letter-spacing: -0.01em; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-2); font-size: 12.5px; white-space: nowrap;
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.good { background: var(--good); } .dot.warning { background: var(--warning); } .dot.critical { background: var(--critical); }
+.spacer { flex: 1; }
+main {
+  display: grid; gap: 14px; padding: 16px 20px 28px; max-width: 1280px; margin: 0 auto;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+  box-shadow: var(--shadow); min-width: 0;
+}
+.card h2 { font-size: 14px; font-weight: 650; color: var(--ink); margin: 0 0 10px; }
+.hero { grid-column: span 4; display: flex; flex-direction: column; gap: 8px; }
+.calib { grid-column: span 5; }
+.tiles { grid-column: span 3; display: grid; gap: 14px; }
+.chart-card { grid-column: span 12; }
+.sensor { grid-column: span 5; }
+.log { grid-column: span 7; }
+.sim { grid-column: span 12; }
+@media (max-width: 980px) {
+  .hero, .calib, .tiles, .sensor, .log { grid-column: span 12; }
+  .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  main { padding: 12px 16px 24px; }
+  .tiles { grid-template-columns: minmax(0, 1fr); }
+}
+.big { display: flex; align-items: baseline; gap: 6px; }
+.big .num { font-size: 64px; font-weight: 700; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+.big .of { color: var(--muted); font-size: 16px; }
+.level {
+  display: inline-flex; align-items: center; gap: 8px; font-weight: 650; font-size: 18px;
+}
+.level svg { width: 20px; height: 20px; flex: none; }
+.sub { color: var(--ink-2); font-size: 13px; }
+.meter { position: relative; height: 10px; border-radius: 6px; background: var(--surface-2); overflow: hidden; margin-top: 6px; }
+.meter .zone { position: absolute; top: 0; bottom: 0; }
+.meter .needle { position: absolute; top: -2px; bottom: -2px; width: 3px; border-radius: 2px; background: var(--ink); transition: left .3s; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow); min-width: 0; }
+.tile .label { color: var(--ink-2); font-size: 12.5px; }
+.tile .value { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.tile .delta { font-size: 12.5px; color: var(--ink-2); }
+.progress { height: 8px; background: var(--surface-2); border-radius: 6px; overflow: hidden; margin: 10px 0 6px; }
+.progress > div { height: 100%; width: 0; background: var(--series-1); border-radius: 6px; transition: width .4s; }
+.instructions { font-size: 14px; margin: 0; }
+.note { color: var(--ink-2); font-size: 12.5px; margin: 6px 0 0; }
+.buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+button {
+  font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--ink);
+}
+button:hover { border-color: var(--axis); }
+button.primary { background: var(--series-1); color: #fff; border-color: transparent; }
+button:disabled { opacity: .45; cursor: default; }
+.chart-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+.chart-head h2 { margin: 0; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--ink-2); font-size: 12.5px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw-line { width: 18px; height: 0; border-top: 2px solid var(--series-1); }
+.sw-dash { width: 18px; height: 0; border-top: 2px dashed var(--ink-2); }
+.sw-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--series-2); box-shadow: 0 0 0 2px var(--surface); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; padding: 4px 10px; color: var(--ink-2); }
+.seg button.on { background: var(--surface-2); color: var(--ink); font-weight: 600; }
+.canvas-wrap { position: relative; }
+canvas { display: block; width: 100%; }
+.tooltip {
+  position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 9px; font-size: 12.5px; color: var(--ink); box-shadow: 0 4px 14px rgba(0,0,0,.12);
+  white-space: nowrap; display: none; z-index: 2; font-variant-numeric: tabular-nums;
+}
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13px; margin-top: 12px; }
+.kv dt { color: var(--ink-2); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+.ubar { position: relative; height: 14px; background: var(--surface-2); border-radius: 7px; margin-top: 4px; }
+.ubar .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 7px; background: var(--series-1); opacity: .85; }
+.ubar .open { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--ink-2); }
+.ubar-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+.advice { margin-top: 12px; padding: 9px 11px; border-radius: 8px; background: var(--surface-2); font-size: 13px; display: none; }
+.events { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto; font-size: 13px; }
+.events li { display: grid; grid-template-columns: 70px 1fr; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--grid); }
+.events time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.simrow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.simrow input[type=range] { width: 260px; max-width: 100%; }
+.overlay {
+  position: fixed; inset: 0; background: rgba(10,10,10,.55); display: flex; align-items: center; justify-content: center; z-index: 10; padding: 16px;
+}
+.overlay[hidden] { display: none; }
+.task {
+  background: var(--surface); color: var(--ink); border-radius: 16px; padding: 26px 28px; width: min(560px, 100%);
+  box-shadow: 0 20px 60px rgba(0,0,0,.3); border: 1px solid var(--border);
+}
+.task h3 { margin: 0 0 6px; font-size: 20px; }
+.task .clock { font-size: 15px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.task .prompt { font-size: 40px; font-weight: 700; text-align: center; margin: 22px 0 10px; font-variant-numeric: tabular-nums; }
+.task input {
+  font: inherit; font-size: 28px; width: 100%; text-align: center; padding: 10px; border-radius: 10px;
+  border: 2px solid var(--axis); background: var(--surface-2); color: var(--ink);
+}
+.task .feedback { min-height: 24px; text-align: center; font-weight: 600; margin-top: 10px; }
+.task .timer { height: 6px; background: var(--surface-2); border-radius: 4px; overflow: hidden; margin-top: 12px; }
+.task .timer > div { height: 100%; background: var(--critical); width: 100%; }
+.flash { animation: flash .35s; }
+@keyframes flash { 0% { background: var(--band-crit); } 100% { background: var(--surface); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Stress monitor</h1>
+  <span class="chip" id="chipDevice"><span class="dot"></span><span>connecting…</span></span>
+  <span class="chip" id="chipSignal"><span class="dot"></span><span>signal</span></span>
+  <span class="chip" id="chipSource"><span>source</span></span>
+  <span class="spacer"></span>
+  <span class="chip" id="chipClients" title="Recorded to data/">recording</span>
+</header>
+
+<main>
+  <section class="card hero" aria-live="polite">
+    <h2>Stress index</h2>
+    <div class="big"><span class="num" id="stressNum">—</span><span class="of">/ 100</span></div>
+    <div class="level" id="levelLabel"></div>
+    <div class="meter" aria-hidden="true">
+      <div class="zone" style="left:0;width:25%;background:var(--band-good)"></div>
+      <div class="zone" style="left:25%;width:30%;background:var(--band-warn)"></div>
+      <div class="zone" style="left:55%;width:45%;background:var(--band-crit)"></div>
+      <div class="needle" id="needle" style="left:0"></div>
+    </div>
+    <div class="sub" id="heroSub">Waiting for data…</div>
+  </section>
+
+  <section class="card calib">
+    <h2 id="calibTitle">Calibration</h2>
+    <p class="instructions" id="calibText">Connecting to the sensor…</p>
+    <div class="progress" id="calibProgress" hidden><div></div></div>
+    <p class="note" id="calibNote"></p>
+    <div class="buttons">
+      <button id="btnCalibrate" title="Re-measure your resting level (60 s, sit still)">Recalibrate</button>
+      <button id="btnTask" class="primary" title="90 s mental-arithmetic task that personalizes the thresholds">Personalize: stress test</button>
+      <button id="btnMark" title="Drop a labelled marker into the recording">Add marker</button>
+      <button id="btnOpen" title="Take your fingers off the electrodes first">Fingers off: zero sensor</button>
+    </div>
+  </section>
+
+  <div class="tiles">
+    <div class="tile"><div class="label">Skin conductance (tonic)</div><div class="value" id="tSCL">—</div><div class="delta" id="tSCLd">&nbsp;</div></div>
+    <div class="tile"><div class="label">Skin responses (SCR)</div><div class="value" id="tSCR">—</div><div class="delta" id="tSCRd">&nbsp;</div></div>
+    <div class="tile"><div class="label">Signal quality</div><div class="value" id="tQ">—</div><div class="delta" id="tQd">&nbsp;</div></div>
+  </div>
+
+  <section class="card chart-card">
+    <div class="chart-head">
+      <h2>Skin conductance (µS)</h2>
+      <div class="legend">
+        <span><i class="sw-line"></i>conductance</span>
+        <span><i class="sw-dash"></i>resting reference</span>
+        <span><i class="sw-dot"></i>skin response (SCR)</span>
+      </div>
+      <span class="spacer"></span>
+      <div class="seg" id="windowSeg" role="group" aria-label="Time window">
+        <button data-w="60">1 min</button><button data-w="120" class="on">2 min</button><button data-w="180">3 min</button>
+      </div>
+    </div>
+    <div class="canvas-wrap"><canvas id="edaChart" height="260"></canvas><div class="tooltip" id="edaTip"></div></div>
+  </section>
+
+  <section class="card chart-card">
+    <div class="chart-head">
+      <h2>Stress index</h2>
+      <div class="legend"><span><i class="sw-line"></i>stress (0–100)</span><span>bands: calm &lt; 25 · stressed ≥ 55</span></div>
+    </div>
+    <div class="canvas-wrap"><canvas id="stressChart" height="200"></canvas><div class="tooltip" id="stressTip"></div></div>
+  </section>
+
+  <section class="card sensor">
+    <h2>Sensor</h2>
+    <div class="sub">Raw reading (fraction of 3.3 V) · line = fingers-off level</div>
+    <div class="ubar"><div class="fill" id="uFill"></div><div class="open" id="uOpen"></div></div>
+    <div class="ubar-scale"><span>0</span><span>0.5</span><span>1</span></div>
+    <dl class="kv">
+      <dt>Reading</dt><dd id="sU">—</dd>
+      <dt>Fingers-off level</dt><dd id="sOpen">—</dd>
+      <dt>Pot offset b</dt><dd id="sB">—</dd>
+      <dt>Measurable range</dt><dd id="sRange">—</dd>
+      <dt>Noise</dt><dd id="sNoise">—</dd>
+      <dt>Artifacts rejected</dt><dd id="sArt">—</dd>
+    </dl>
+    <div class="advice" id="advice"></div>
+  </section>
+
+  <section class="card log">
+    <h2>Events</h2>
+    <ul class="events" id="events"></ul>
+  </section>
+
+  <section class="card sim" id="simCard" hidden>
+    <h2>Simulator</h2>
+    <div class="simrow">
+      <label for="simStress">Simulated stress</label>
+      <input type="range" id="simStress" min="0" max="100" value="0">
+      <span id="simStressVal">auto</span>
+      <button id="simLift">Lift fingers</button>
+      <button id="simAuto">Back to scripted scenario</button>
+      <span class="sub" id="simSeg"></span>
+    </div>
+  </section>
+</main>
+
+<div class="overlay" id="taskOverlay" hidden>
+  <div class="task" role="dialog" aria-modal="true" aria-labelledby="taskTitle">
+    <h3 id="taskTitle">Stress calibration</h3>
+    <div id="taskIntro">
+      <p>For 90 seconds, count backwards in steps of <b>13</b>, as fast and accurately as you can. Type each answer and press <b>Enter</b>.
+         A mistake, or taking longer than 6 s, sends you back to the start number.</p>
+      <p class="note">This deliberately raises your stress a little, so the monitor learns how <i>your</i> skin responds.
+         Keep the hand with the straps still on the desk and type with the other hand.</p>
+      <div class="buttons"><button class="primary" id="taskStart">Start (90 s)</button><button id="taskCancel">Cancel</button></div>
+    </div>
+    <div id="taskRun" hidden>
+      <div class="clock" id="taskClock">90 s left</div>
+      <div class="prompt" id="taskPrompt">—</div>
+      <input id="taskInput" inputmode="numeric" autocomplete="off" aria-label="Your answer">
+      <div class="timer"><div id="taskTimer"></div></div>
+      <div class="feedback" id="taskFeedback"></div>
+      <div class="buttons"><button id="taskAbort">Stop and discard</button></div>
+    </div>
+    <div id="taskDone" hidden>
+      <p id="taskResult"></p>
+      <div class="buttons"><button class="primary" id="taskClose">Close</button></div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// ------------------------------------------------------------------ data
+const HISTORY_S = 190;
+const data = { samples: [], stress: [], refs: [], scrs: [], marks: [] };
+let state = null, windowS = 120, hello = null;
+
+function trim(arr, now) { while (arr.length && now - arr[0].time > HISTORY_S) arr.shift(); }
+function latestTime() {
+  const s = data.samples[data.samples.length - 1];
+  return s ? s.time : Date.now() / 1000;
+}
+
+// ------------------------------------------------------------------ websocket
+let ws, cmdId = 0;
+function connect() {
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.onmessage = (ev) => handle(JSON.parse(ev.data));
+  ws.onclose = () => { setChip("chipDevice", "", "server offline – retrying…"); setTimeout(connect, 1000); };
+}
+function send(cmd, extra = {}) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ cmd, id: ++cmdId, ...extra }));
+}
+const pendingAcks = {};
+function sendAwait(cmd, extra = {}) {
+  return new Promise((resolve) => {
+    const id = ++cmdId; pendingAcks[id] = resolve;
+    ws.send(JSON.stringify({ cmd, id, ...extra }));
+  });
+}
+
+function handle(m) {
+  switch (m.type) {
+    case "hello":
+      hello = m;
+      data.samples = m.history.slice(); data.stress = []; data.refs = []; data.scrs = [];
+      for (const e of m.events) data.scrs.push({ time: e.time, t: e.t, amp: e.amplitude_us });
+      $("simCard").hidden = m.source !== "simulator";
+      $("chipSource").textContent = m.source === "serial" ? "XIAO nRF52840 · GSR" : m.source;
+      applyState(m.state);
+      break;
+    case "sample":
+      data.samples.push(m); trim(data.samples, m.time); scheduleDraw(); break;
+    case "state":
+      applyState(m); break;
+    case "scr":
+      data.scrs.push({ time: m.time, t: m.t, amp: m.amplitude_us }); trim(data.scrs, m.time);
+      logEvent(m.time, `Skin response +${m.amplitude_us.toFixed(3)} µS (rise ${m.rise_s} s)`); break;
+    case "level":
+      logEvent(m.time, `Level → ${m.level}${m.stressed ? " (stressed)" : ""} at ${m.stress}`); break;
+    case "phase":
+      logEvent(m.time, m.phase === "ready"
+        ? `Calibrated: resting ${m.baseline_scl_us} µS, ${m.baseline_scr_rate} SCR/min`
+        : `Calibration started`); break;
+    case "contact":
+      logEvent(m.time, m.contact ? "Fingers on the electrodes" : "Contact lost"); break;
+    case "notice":
+      logEvent(m.time, m.message); break;
+    case "open_circuit":
+      logEvent(m.time, m.ok ? `Sensor zeroed: fingers-off level ${m.u_open}` : "Zeroing failed: signal wasn't flat (were your fingers off?)"); break;
+    case "reference":
+      if (!m.active && m.ok !== undefined) logEvent(m.time, m.ok ? `Stress test: SCL ${fmtSigned(m.scl_change_pct)} %, SCRs +${m.scr_rate_above_baseline}/min${m.personalized ? " → personalized" : ""}` : "Stress test discarded");
+      break;
+    case "mark":
+      data.marks.push({ time: m.time, label: m.label }); logEvent(m.time, `Marker: ${m.label}`); break;
+    case "status":
+      if (state) { state.device = state.device || {}; state.device.status = m.device; updateHeader(); } break;
+    case "ack":
+      if (m.id && pendingAcks[m.id]) { pendingAcks[m.id](m); delete pendingAcks[m.id]; }
+      else if (!m.ok) logEvent(Date.now() / 1000, `Command failed: ${m.error}`);
+      break;
+  }
+}
+
+// ------------------------------------------------------------------ state → UI
+const ICONS = {
+  calm: '<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="var(--good)"/><path d="M5.5 10.5l3 3 6-6.5" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  elevated: '<svg viewBox="0 0 20 20"><path d="M10 1.5l9 16.5H1z" fill="var(--warning)"/><rect x="9" y="7" width="2" height="6" rx="1" fill="#0b0b0b"/><circle cx="10" cy="15.3" r="1.1" fill="#0b0b0b"/></svg>',
+  stressed: '<svg viewBox="0 0 20 20"><rect x="1" y="1" width="18" height="18" rx="4" fill="var(--critical)"/><rect x="9" y="4.5" width="2" height="7.5" rx="1" fill="#fff"/><circle cx="10" cy="14.8" r="1.2" fill="#fff"/></svg>',
+  unknown: '<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="var(--muted)" stroke-width="2"/></svg>',
+};
+const LEVEL_TEXT = { calm: "Calm", elevated: "Elevated", stressed: "Stressed", unknown: "No reading" };
+const SIGNAL_TEXT = {
+  ok: ["good", "Good contact"], settling: ["warning", "Settling…"], artifact: ["warning", "Movement artifact"],
+  noisy: ["warning", "Noisy"], no_contact: ["critical", "No skin contact"], saturated_low: ["critical", "Out of range (pot)"],
+};
+
+function fmt(x, d = 2) { return x === null || x === undefined ? "—" : Number(x).toFixed(d); }
+function fmtSigned(x, d = 1) { return x === null || x === undefined ? "—" : (x >= 0 ? "+" : "") + Number(x).toFixed(d); }
+function setChip(id, cls, text) {
+  const el = $(id); el.querySelector(".dot").className = "dot " + cls; el.querySelector("span:last-child").textContent = text;
+}
+
+function updateHeader() {
+  const d = state.device || {};
+  const streaming = d.streaming;
+  setChip("chipDevice", streaming ? "good" : "critical", streaming ? (d.source === "serial" ? "sensor streaming" : "streaming") : (d.status || "no data"));
+  const [cls, txt] = SIGNAL_TEXT[state.signal] || ["", state.signal];
+  setChip("chipSignal", cls, txt);
+}
+
+function applyState(s) {
+  state = s;
+  const now = s.time;
+  if (s.stress !== null) { data.stress.push({ time: now, v: s.stress }); trim(data.stress, now); }
+  if (s.baseline_scl_us !== null) { data.refs.push({ time: now, v: s.baseline_scl_us }); trim(data.refs, now); }
+  updateHeader();
+
+  // hero
+  const ready = s.phase === "ready" && s.stress !== null;
+  $("stressNum").textContent = ready ? Math.round(s.stress) : "—";
+  const lvl = ready ? s.level : "unknown";
+  $("levelLabel").innerHTML = ICONS[lvl] + `<span>${LEVEL_TEXT[lvl]}${s.stressed ? " — stress detected" : ""}</span>`;
+  $("needle").style.left = `calc(${ready ? Math.min(100, s.stress) : 0}% - 1px)`;
+  let sub = "";
+  if (!ready) sub = s.phase === "baseline" ? "Learning your resting level…" : "Put the finger straps on to start.";
+  else if (!s.reliable) sub = "Holding last value: signal not reliable right now.";
+  else if (s.trend_per_min !== null) {
+    const tr = s.trend_per_min;
+    sub = Math.abs(tr) < 3 ? "Steady" : tr > 0 ? `Rising (+${tr.toFixed(0)}/min)` : `Falling (${tr.toFixed(0)}/min)`;
+    sub += ` · evidence: responses ${Math.round(100 * s.evidence.phasic)} %, level ${Math.round(100 * s.evidence.tonic)} %`;
+  }
+  $("heroSub").textContent = sub;
+
+  // calibration card
+  const cal = s.calibration || {};
+  const prog = $("calibProgress");
+  if (s.reference && s.reference.active) {
+    $("calibTitle").textContent = "Stress test running";
+    $("calibText").textContent = `Stress test in progress (${fmt(s.reference.elapsed_s, 0)} s).`;
+    prog.hidden = true; $("calibNote").textContent = "";
+  } else if (s.phase === "waiting_contact") {
+    $("calibTitle").textContent = "Calibration";
+    $("calibText").innerHTML = "Put the finger straps on your <b>index and middle finger</b> (metal pads against the skin), rest that hand still. Calibration starts automatically.";
+    prog.hidden = true; $("calibNote").textContent = "";
+  } else if (s.phase === "baseline") {
+    $("calibTitle").textContent = "Calibrating";
+    const left = cal.remaining_s ?? 0;
+    $("calibText").innerHTML = s.contact
+      ? `<b>Sit still, relax and breathe normally.</b> Measuring your resting level${left > 0 ? `: about ${Math.ceil(left)} s left` : ""}.`
+      : "<b>Paused</b>: put the finger straps back on.";
+    prog.hidden = false; prog.firstElementChild.style.width = `${Math.round(100 * (cal.progress ?? 0))}%`;
+    $("calibNote").textContent = cal.settling
+      ? `Electrodes still settling (drift ${fmt(cal.drift_pct_min, 1)} %/min): waiting for it to level off (max 2 min).`
+      : "";
+  } else {
+    $("calibTitle").textContent = "Calibrated";
+    $("calibText").innerHTML = `Resting reference <b>${fmt(s.baseline_scl_us, 2)} µS</b>, resting response rate <b>${fmt(s.baseline_scr_rate_per_min, 1)}/min</b>.`;
+    prog.hidden = true;
+    $("calibNote").textContent = cal.personalized
+      ? "Thresholds personalized from your stress test."
+      : "Using default thresholds. Run the stress test to personalize them (recommended).";
+  }
+  $("btnTask").disabled = s.phase !== "ready" || !s.contact;
+
+  // tiles
+  $("tSCL").textContent = s.scl_us === null ? "—" : `${fmt(s.scl_us, 2)} µS`;
+  $("tSCLd").textContent = s.scl_change_pct === null ? " " : `${fmtSigned(s.scl_change_pct)} % vs resting reference`;
+  $("tSCR").textContent = `${fmt(s.scr_rate_per_min, 1)} /min`;
+  $("tSCRd").textContent = s.baseline_scr_rate_per_min === null ? `${s.scr_count} detected` : `resting ${fmt(s.baseline_scr_rate_per_min, 1)}/min · ${s.scr_count} total`;
+  const [qcls, qtxt] = SIGNAL_TEXT[s.signal] || ["", s.signal];
+  $("tQ").textContent = `${Math.round(100 * s.quality)} %`;
+  $("tQd").innerHTML = `<span class="dot ${qcls}" style="display:inline-block;margin-right:6px"></span>${qtxt}`;
+
+  // sensor
+  const sen = s.sensor;
+  $("uFill").style.width = `${Math.max(0, Math.min(1, sen.u ?? 0)) * 100}%`;
+  $("uOpen").style.left = `${(sen.u_open ?? 0) * 100}%`;
+  $("sU").textContent = sen.u === null ? "—" : `${fmt(sen.u, 4)} (${fmt(sen.u * 3.3, 3)} V), hum ${fmt((sen.u_sd ?? 0) * 16384, 0)} counts`;
+  $("sOpen").textContent = fmt(sen.u_open, 4);
+  $("sB").textContent = `${fmt(sen.b, 3)} (${sen.b_source.replace("_", " ")})`;
+  $("sRange").textContent = `${fmt(sen.range_us[0], 2)} – ${fmt(sen.range_us[1], 0)} µS`;
+  $("sNoise").textContent = sen.noise_us === null ? "measured during calibration" : `${fmt(sen.noise_us, 4)} µS per sample`;
+  $("sArt").textContent = `${s.artifacts}`;
+  const adv = $("advice");
+  let advice = "";
+  if (s.signal === "saturated_low") advice = "The reading is pinned at 0 V: your conductance is above the sensor's range. Turn the small potentiometer on the GSR board until the reading moves up into the middle of the bar.";
+  else if (!s.contact && sen.u !== null && sen.u_open !== null && sen.u < sen.u_open - 0.002) advice = "Reading is close to the fingers-off level. If the straps are on, check that both metal pads touch skin and the cable is fully plugged in.";
+  else if (s.contact && sen.u !== null && sen.u > 0.9) advice = "Reading is near the top of the range: very low conductance. Slightly moist fingertips help dry electrodes make contact.";
+  adv.textContent = advice; adv.style.display = advice ? "block" : "none";
+
+  // sim
+  if (s.device && s.device.sim) {
+    $("simSeg").textContent = `scenario: ${s.device.sim.segment}`;
+    $("simStressVal").textContent = s.device.sim.stress === null ? "auto" : `${Math.round(100 * s.device.sim.stress)} %`;
+    $("simLift").textContent = s.device.sim.contact === false ? "Put fingers back" : "Lift fingers";
+  }
+  scheduleDraw();
+}
+
+function logEvent(time, text) {
+  const li = document.createElement("li");
+  const d = new Date(time * 1000);
+  li.innerHTML = `<time>${d.toLocaleTimeString([], { hour12: false })}</time><span></span>`;
+  li.lastChild.textContent = text;
+  const ul = $("events"); ul.prepend(li);
+  while (ul.children.length > 60) ul.lastChild.remove();
+}
+
+// ------------------------------------------------------------------ charts
+class TimeChart {
+  constructor(canvas, tip, opts) {
+    this.c = canvas; this.tip = tip; this.o = opts; this.hoverX = null;
+    canvas.style.height = `${opts.height}px`;  // pin CSS size; the backing store follows devicePixelRatio
+    canvas.addEventListener("mousemove", (e) => { this.hoverX = e.offsetX; this.draw(); });
+    canvas.addEventListener("mouseleave", () => { this.hoverX = null; this.tip.style.display = "none"; this.draw(); });
+    new ResizeObserver(() => this.draw()).observe(canvas);
+  }
+  layout() {
+    const dpr = window.devicePixelRatio || 1, w = this.c.clientWidth, h = this.o.height;
+    if (this.c.width !== Math.round(w * dpr) || this.c.height !== Math.round(h * dpr)) {
+      this.c.width = Math.round(w * dpr); this.c.height = Math.round(h * dpr);
+    }
+    const ctx = this.c.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w, h, L: 48, R: 14, T: 10, B: 24 };
+  }
+  draw() {
+    const { ctx, w, h, L, R, T, B } = this.layout();
+    const now = latestTime(), t0 = now - windowS;
+    const X = (t) => L + ((t - t0) / windowS) * (w - L - R);
+    const [y0, y1] = this.o.domain(t0);
+    const Y = (v) => T + (1 - (v - y0) / (y1 - y0)) * (h - T - B);
+    ctx.clearRect(0, 0, w, h);
+    ctx.font = "11.5px system-ui, sans-serif";
+    if (this.o.bands) for (const b of this.o.bands) {
+      ctx.fillStyle = css(b.color); const ya = Y(Math.min(b.to, y1)), yb = Y(Math.max(b.from, y0));
+      ctx.fillRect(L, ya, w - L - R, yb - ya);
+      ctx.fillStyle = css("--muted"); ctx.textAlign = "left"; ctx.fillText(b.label, L + 6, ya + 13);
+    }
+    // grid + y ticks
+    ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1; ctx.fillStyle = css("--muted"); ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (const v of niceTicks(y0, y1, 5)) {
+      const y = Math.round(Y(v)) + 0.5; ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(w - R, y); ctx.stroke();
+      ctx.fillText(this.o.tickFmt(v), L - 6, y);
+    }
+    // x ticks (seconds ago)
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    const step = windowS <= 60 ? 10 : 30;
+    for (let s = 0; s <= windowS; s += step) {
+      const x = X(now - s); ctx.fillText(s === 0 ? "now" : `−${s} s`, x, h - B + 6);
+    }
+    ctx.strokeStyle = css("--axis"); ctx.beginPath(); ctx.moveTo(L, h - B + 0.5); ctx.lineTo(w - R, h - B + 0.5); ctx.stroke();
+    // markers
+    for (const m of data.marks) if (m.time >= t0) {
+      const x = Math.round(X(m.time)) + 0.5; ctx.strokeStyle = css("--ink-2"); ctx.setLineDash([2, 3]);
+      ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, h - B); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = css("--ink-2"); ctx.textAlign = "left"; ctx.fillText(m.label, x + 3, T);
+    }
+    ctx.save(); ctx.beginPath(); ctx.rect(L, T - 2, w - L - R, h - T - B + 4); ctx.clip();
+    for (const s of this.o.series) drawLine(ctx, s.points(), X, Y, t0, css(s.color), s.dash, s.width || 2);
+    if (this.o.dots) for (const d of this.o.dots()) if (d.time >= t0) {
+      ctx.beginPath(); ctx.arc(X(d.time), Y(d.v), 4.5, 0, 2 * Math.PI);
+      ctx.fillStyle = css("--series-2"); ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = css("--surface"); ctx.stroke();
+    }
+    ctx.restore();
+    // hover
+    if (this.hoverX !== null && this.hoverX >= L && this.hoverX <= w - R) {
+      const t = t0 + ((this.hoverX - L) / (w - L - R)) * windowS;
+      ctx.strokeStyle = css("--axis"); ctx.beginPath(); ctx.moveTo(this.hoverX + 0.5, T); ctx.lineTo(this.hoverX + 0.5, h - B); ctx.stroke();
+      const html = this.o.tooltip(t, now);
+      if (html) {
+        this.tip.innerHTML = html; this.tip.style.display = "block";
+        const tw = this.tip.offsetWidth;
+        this.tip.style.left = `${Math.min(this.hoverX + 12, w - tw - 4)}px`; this.tip.style.top = "8px";
+      } else this.tip.style.display = "none";
+    }
+  }
+}
+function drawLine(ctx, pts, X, Y, t0, color, dash, width) {
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = "round"; ctx.lineCap = "round";
+  ctx.setLineDash(dash ? [6, 4] : []);
+  ctx.beginPath(); let pen = false, prevT = null;
+  for (const p of pts) {
+    if (p.time < t0 - 2) continue;
+    if (p.v === null || p.v === undefined || (prevT !== null && p.time - prevT > 1.0)) { pen = false; }
+    if (p.v === null || p.v === undefined) { prevT = p.time; continue; }
+    const x = X(p.time), y = Y(p.v);
+    if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
+    prevT = p.time;
+  }
+  ctx.stroke(); ctx.setLineDash([]);
+}
+function niceTicks(a, b, n) {
+  const span = b - a, raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((k) => k * mag).find((s) => span / s <= n) || 10 * mag;
+  const out = []; for (let v = Math.ceil(a / step) * step; v <= b + 1e-9; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+function nearest(arr, t, key = "time") {
+  let lo = 0, hi = arr.length - 1; if (hi < 0) return null;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid][key] < t) lo = mid + 1; else hi = mid; }
+  const a = arr[lo], b = arr[lo - 1]; return b && Math.abs(b[key] - t) < Math.abs(a[key] - t) ? b : a;
+}
+const edaPts = () => data.samples.map((s) => ({ time: s.time, v: s.eda }));
+const edaChart = new TimeChart($("edaChart"), $("edaTip"), {
+  height: 260,
+  series: [
+    { points: () => data.refs, color: "--ink-2", dash: true, width: 1.5 },
+    { points: edaPts, color: "--series-1" },
+  ],
+  dots: () => data.scrs.map((d) => { const s = nearest(data.samples, d.time); return { time: d.time, v: s && s.eda !== null ? s.eda : null }; }).filter((d) => d.v !== null),
+  domain: (t0) => {
+    let lo = Infinity, hi = -Infinity;
+    for (const s of data.samples) if (s.time >= t0 && s.eda !== null) { lo = Math.min(lo, s.eda); hi = Math.max(hi, s.eda); }
+    for (const r of data.refs) if (r.time >= t0) { lo = Math.min(lo, r.v); hi = Math.max(hi, r.v); }
+    if (!isFinite(lo)) return [0, 1];
+    const mid = (lo + hi) / 2, span = Math.max(hi - lo, 0.1) * 1.15;
+    return [Math.max(0, mid - span / 2), mid + span / 2];
+  },
+  tickFmt: (v) => v.toFixed(v < 1 ? 2 : 1),
+  tooltip: (t, now) => {
+    const s = nearest(data.samples, t); if (!s) return "";
+    const r = nearest(data.refs, t), scr = data.scrs.find((d) => Math.abs(d.time - t) < 1.0);
+    let h = `<b>${(now - s.time).toFixed(1)} s ago</b><br>`;
+    h += s.eda === null ? (s.contact ? "settling / artifact" : "no contact") : `conductance ${s.eda.toFixed(3)} µS`;
+    if (r) h += `<br>resting ref ${r.v.toFixed(3)} µS`;
+    if (scr) h += `<br>SCR +${scr.amp.toFixed(3)} µS`;
+    return h;
+  },
+});
+const stressChart = new TimeChart($("stressChart"), $("stressTip"), {
+  height: 200,
+  bands: [
+    { from: 0, to: 25, color: "--band-good", label: "calm" },
+    { from: 25, to: 55, color: "--band-warn", label: "elevated" },
+    { from: 55, to: 100, color: "--band-crit", label: "stressed" },
+  ],
+  series: [{ points: () => data.stress, color: "--series-1" }],
+  domain: () => [0, 100],
+  tickFmt: (v) => v.toFixed(0),
+  tooltip: (t, now) => {
+    const p = nearest(data.stress, t); if (!p || Math.abs(p.time - t) > 2) return "";
+    return `<b>${(now - p.time).toFixed(1)} s ago</b><br>stress ${p.v.toFixed(1)}`;
+  },
+});
+let drawQueued = false;
+function scheduleDraw() {
+  if (drawQueued) return; drawQueued = true;
+  requestAnimationFrame(() => { drawQueued = false; edaChart.draw(); stressChart.draw(); });
+}
+
+// ------------------------------------------------------------------ controls
+for (const b of $("windowSeg").querySelectorAll("button")) {
+  b.onclick = () => {
+    windowS = +b.dataset.w;
+    for (const o of $("windowSeg").querySelectorAll("button")) o.classList.toggle("on", o === b);
+    scheduleDraw();
+  };
+}
+$("btnCalibrate").onclick = () => { if (confirm("Recalibrate your resting level? Sit still and relax for about a minute.")) send("calibrate"); };
+$("btnMark").onclick = () => { const label = prompt("Marker label (e.g. 'deep breath')", "deep breath"); if (label) send("mark", { label }); };
+$("btnOpen").onclick = () => { if (confirm("Take your fingers OFF the electrodes, then press OK. The sensor will measure its fingers-off level for 2 s.")) send("open_circuit"); };
+$("simStress").oninput = (e) => send("sim", { stress: e.target.value / 100 });
+$("simLift").onclick = () => send("sim", { contact: state && state.device && state.device.sim && state.device.sim.contact === false ? true : false });
+$("simAuto").onclick = () => send("sim", { auto: true });
+
+// ------------------------------------------------------------------ stress test (personal reference)
+const TASK_S = 90, ANSWER_S = 6, STEP = 13;
+let task = null, audio = null;
+function beep() {
+  try {
+    audio = audio || new AudioContext();
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.type = "square"; o.frequency.value = 220; g.gain.value = 0.08;
+    o.connect(g).connect(audio.destination); o.start(); o.stop(audio.currentTime + 0.25);
+  } catch (e) { /* audio is optional */ }
+}
+$("btnTask").onclick = () => {
+  $("taskIntro").hidden = false; $("taskRun").hidden = true; $("taskDone").hidden = true;
+  $("taskOverlay").hidden = false;
+};
+$("taskCancel").onclick = () => { $("taskOverlay").hidden = true; };
+$("taskClose").onclick = () => { $("taskOverlay").hidden = true; };
+$("taskAbort").onclick = () => { task = null; send("reference_cancel"); $("taskOverlay").hidden = true; };
+$("taskStart").onclick = async () => {
+  const ack = await sendAwait("reference_start");
+  if (!ack.ok) { alert(ack.error); return; }
+  const start = 1000 + Math.floor(Math.random() * 900) * 1 + 7;
+  task = { start, current: start, ends: performance.now() + TASK_S * 1000, deadline: 0, streak: 0, correct: 0 };
+  $("taskIntro").hidden = true; $("taskRun").hidden = false;
+  nextQuestion(""); $("taskInput").value = ""; $("taskInput").focus();
+  tickTask();
+};
+function nextQuestion(feedback) {
+  task.deadline = performance.now() + ANSWER_S * 1000;
+  $("taskPrompt").textContent = `${task.current} − ${STEP}`;
+  $("taskFeedback").textContent = feedback;
+}
+function fail(msg) {
+  beep(); task.current = task.start; task.streak = 0;
+  const card = document.querySelector(".task"); card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
+  $("taskFeedback").style.color = "var(--critical)";
+  nextQuestion(`${msg} Start again from ${task.start}.`);
+}
+$("taskInput").addEventListener("keydown", (e) => {
+  if (!task || e.key !== "Enter") return;
+  const v = parseInt($("taskInput").value, 10); $("taskInput").value = "";
+  if (v === task.current - STEP) {
+    task.current -= STEP; task.streak++; task.correct++;
+    $("taskFeedback").style.color = "var(--good-text)";
+    nextQuestion(task.streak % 5 === 0 ? `${task.streak} in a row. Faster!` : "Correct.");
+  } else fail("Wrong.");
+});
+async function tickTask() {
+  if (!task) return;
+  const now = performance.now();
+  const left = Math.max(0, (task.ends - now) / 1000);
+  $("taskClock").textContent = `${Math.ceil(left)} s left · ${task.correct} correct`;
+  $("taskTimer").style.width = `${Math.max(0, (task.deadline - now) / (ANSWER_S * 10))}%`;
+  if (now > task.deadline) fail("Too slow!");
+  if (left <= 0) {
+    task = null;
+    const r = await sendAwait("reference_stop");
+    $("taskRun").hidden = true; $("taskDone").hidden = false;
+    $("taskResult").innerHTML = !r.ok
+      ? `Couldn't use this run: ${r.error}. Make sure the straps stay on and try again.`
+      : `During the task your skin conductance changed <b>${fmtSigned(r.scl_change_pct)} %</b> and your response rate rose by <b>${fmtSigned(r.scr_rate_above_baseline, 1)}/min</b>.<br><br>` +
+        (r.personalized ? "Thresholds are now personalized to you. Relax now and watch your stress index come back down."
+                        : "Your skin barely reacted, so the default thresholds stay. GSR responds less strongly in some people. You can repeat the test later.");
+    return;
+  }
+  requestAnimationFrame(tickTask);
+}
+
+connect();
+</script>
+</body>
+</html>

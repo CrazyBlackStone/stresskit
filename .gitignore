@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+firmware/gsr_stream/build/
+
+# Session recordings and the per-sensor calibration profile: personal biometric data, kept local.
+data/
