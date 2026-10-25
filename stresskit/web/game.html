@@ -591,6 +591,14 @@ const speech = {
     if (this.audio) { this.audio.pause(); this.audio = null; }
     if ("speechSynthesis" in window) speechSynthesis.cancel();
   },
+  // Has the server render lines ahead (it caches them), so timed cues play without a wait the first time.
+  // One at a time, to stay clear of Cartesia's rate limit.
+  warm(texts) {
+    if (!this.enabled || !(this.status && this.status.cartesia)) return;
+    texts.reduce((p, text) => p.then(() => fetch(apiUrl("/api/voice/say"), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+    }).then((r) => r.blob()).catch(() => {})), Promise.resolve());
+  },
 };
 speech.refresh();
 setInterval(() => speech.refresh(), 30000);
@@ -1089,22 +1097,40 @@ const Welcome = {
     else this.next();
   },
   breath() {
-    // First taste of Glow: one big breath, which the skin sensor can see a few seconds later.
-    this.step = "breath"; this.flare = 0;
+    // First taste of Glow: one big breath, which the skin sensor can see a few seconds later. Like Glow, it
+    // never gives up on the breath: no answer means a gentle "once more", and no skin contact means waiting.
+    this.step = "breath"; this.flare = 0; this.breathTries = 0;
     setUI(`<div class="spacer"></div><div class="spacer"></div>
-      <div class="prompt fade-in"><h2>Now one big, quick breath in</h2><p>…then let it all out slowly. Watch the lantern.</p></div>
+      <div class="prompt fade-in"></div>
       <div class="spacer" style="flex:.4"></div>`);
-    link.send({ cmd: "expect_response", seconds: 11 });
-    const h = (m) => { if (m.type === "scr" && m.cued) { this.flare = 1; finish(true); } };
-    const finish = (seen) => {
+    const say = (h, p) => { const pr = ui.querySelector(".prompt"); if (pr) pr.innerHTML = `<h2>${h}</h2><p>${p}</p>`; };
+    const live = () => !this.breathDone && scene === this;
+    const h = (m) => {
+      if (m.type !== "scr" || !m.cued || !live()) return;
+      this.flare = 1; this.breathDone = true; clearTimeout(this.breathT);
       const i = link.handlers.indexOf(h); if (i >= 0) link.handlers.splice(i, 1);
-      if (this.breathDone) return; this.breathDone = true;
-      const pr = ui.querySelector(".prompt");
-      if (pr) pr.innerHTML = seen ? `<h2>It felt that!</h2><p>That's the Glow. Your breath lights the way.</p>` : `<h2>Lovely</h2><p>The lantern is lit.</p>`;
+      say("It felt that!", "That's the Glow. Your breath lights the way.");
       setTimeout(() => this.next(), 3500);
     };
+    const ask = () => {
+      if (!live()) return;
+      if (!(link.connected && link.state && link.state.contact && link.state.signal === "ok")) {
+        say("Rest your fingers in the straps", "The lantern needs to feel your hand to see your breath.");
+        this.breathT = setTimeout(ask, 1000);
+        return;
+      }
+      say(this.breathTries ? "Once more: one big, quick breath in" : "Now one big, quick breath in", "…then let it all out slowly. Watch the lantern.");
+      link.send({ cmd: "expect_response", seconds: 14 });
+      this.breathT = setTimeout(() => {
+        if (!live()) return;
+        this.breathTries++;
+        say("Take your time", "Let your shoulders drop, then fill your lungs all the way up. The lantern is listening.");
+        voice.say("Let's try once more. Nice and big.", 3.5);
+        this.breathT = setTimeout(ask, 4500);
+      }, 14500);
+    };
     link.on(h);
-    setTimeout(() => finish(false), 13000);
+    ask();
   },
   next() { if (link.imuPresent && input.mode !== "touch") go(Setup); else go(Harbor); },
   draw(time) {

@@ -26,7 +26,7 @@ plan cites names (scenes, objects, strings) rather than line numbers.
 |---|---|---|---|
 | Welcome breath: "Now one big, quick breath in" → "It felt that!" | `game.html` `Welcome.breath()` | committed | none needed |
 | Glow: cued breath → "The lighthouse heard you" + reveal (whale first) | `glow.js` `Glow.scoreBreath()`, `GLOW_REVEALS` | committed | none needed |
-| Glow waits for the skin to answer and re-prompts gently ("The lighthouse is listening for your breath…", "Let's try that once more", then "Skip this breath") | `glow.js` `GLOW_RETRY`, `Glow.retry()`, `listen` phase | **in flight** (uncommitted) | Committed Glow moves on after 12 s with a partial charge ("The lighthouse felt that"). Use that as the contrast in S6 instead of the re-prompt |
+| Glow waits for the skin to answer and re-prompts gently, as often as it takes ("The lighthouse is listening for your breath…", "Let's try that once more"); the lantern says "Take a deep breath in.", "And slowly out.", "The lighthouse heard you." | `glow.js` `GLOW_RETRY`, `GLOW_SAY`, `Glow.retry()`, `listen` phase | **done** | If no breath registers, coach a bigger breath; only Finish leaves early |
 | Comfort fireflies on an unprompted, counted skin response | `game.html` `comfort` + `drawComfort()`; only in scenes with `allowComfort` (Harbor, Rest, Results, Voyage, Collection, Kind) | committed | none needed |
 | Helping hand: on at stress ≥ 45 held 4 s, off at ≤ 32 held 10 s, gold "✨ Your lantern is helping" badge | `game.html` `assist` (`ON_ABOVE: 45, OFF_BELOW: 32, ON_HOLD: 4, OFF_HOLD: 10`) | committed | **A** key in dev mode forces it. The dev overlay then prints "(forced, A)", and the caption must say so |
 | Gentle mood + world calm (aurora, stars, glowing sea) | `game.html` `updateMood()`, `updateWorld()`, `drawAurora()`, `drawSeaGlow()` | committed | none needed |
@@ -353,6 +353,12 @@ stimuli ≥ 30–60 s apart.
 3. `GAME`: Window Capture of the Chrome app window, method "Windows 10 (1903 and up)", **Capture Cursor off**. Transform: fit to 1280×720 at x=640, y=0.
 4. `GAME (strip)`: Add **Existing** source → `GAME`, then Edit Transform → Crop to the dev panel's chart and top readout lines; place it at x=640, y=720, 1280×360. Crop is per scene item, so this doesn't affect source 3.
 5. `BUG`: Text (GDI+) "ONE TAKE · REAL SENSOR · NO EDITS", 22 px, `#ffd27a` on 60 % navy.
+
+**Overlay from the recorded data instead (or as well):** every game run is saved to
+`data/runs/run-<date>-<time>-<activity>.csv` (README → Other commands): `t_s` from the run's start, the wall
+`clock` to line it up with the footage, `eda_us` at 10 Hz and an `event` column (SCRs marked cued / counted /
+motion, breath cues, game markers). Plot it as a clean, full-width trace in post and sync on the run's first
+event, which is the game's "round start".
 
 Also use the split for 1.3 (circle inset only), 4.6 and 7.2 (CAM-A inset). Phone-as-webcam lag is 100–300 ms,
 which is negligible next to the 2–6 s physiology. If a camera can't go into OBS, record it on the device and sync

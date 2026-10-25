@@ -113,7 +113,7 @@ Presentation-only, about 30 lines in `game.html` and `glow.js`. No server or eng
 const DEMO = PARAMS.has("demo") && PARAMS.get("demo") !== "0";
 // CFG.pace: default 4 in demo mode unless ?pace= is given
 // Welcome.next(): if (DEMO && axisSaved()) go(Harbor) instead of Setup   (axisSaved already exists)
-// Glow: intro 6 -> 3 s; reveal 3.6 -> 2 s; show "Skip this breath" after 1 unseen try instead of 2
+// Glow: intro 6 -> 3 s; reveal 3.6 -> 2 s (the breath itself is never skipped: Glow waits for it)
 // Rest: show Continue at once; in done(), if (clock() - this.start < CFG.restMeasureFrom + 8) post = null
 //       -> the existing code already drops a null post from effects (game.html:1059-1063): "not measured"
 // Voyage: dur 22 -> 10 s

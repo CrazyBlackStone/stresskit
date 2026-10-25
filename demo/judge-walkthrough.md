@@ -12,8 +12,8 @@ name.
 
 **Landing soon** (other sessions; this script doesn't depend on them):
 - **Glow waits for the breath.** Glow's breath step now waits until the skin registers the breath.
-  If it doesn't, the game re-prompts gently about every 18 s, and "Skip this breath" appears after
-  two tries. This is already in the working tree and is timed below.
+  If it doesn't, the game re-prompts gently about every 20 s and never gives up (no skip button;
+  only Finish leaves early). The lantern says each cue aloud. Committed and timed below.
 - **Cartesia voice.** A soothing Cartesia text-to-speech voice for the lantern, plus spoken
   affirmations that the patient says out loud (Cartesia speech-to-text). Expect a "Kind words" offer
   on the boat after the first round.
@@ -122,7 +122,7 @@ once more" (`glow.js:450-458`, `retry` 485). That costs about 18 s, so drop the 
 
 | Moment | Mechanism | Fails when | Recovery |
 |---|---|---|---|
-| Breath lights the lighthouse | The game sends `expect_response` (11 s window). The engine tags a response that peaks 2 s or more after the cue, inside the window, as `cued`, and it doesn't count as stress (`engine.py:102-105`, `_on_scr` 505-510). | Weak responder, dry electrodes, ring-hand motion. | Gentle re-prompt about every 18 s. "Skip this breath" after 2 tries (`glow.js:470`, 485-492). |
+| Breath lights the lighthouse | The game sends `expect_response` (11 s window). The engine tags a response that peaks 2 s or more after the cue, inside the window, as `cued`, and it doesn't count as stress (`engine.py:102-105`, `_on_scr` 505-510). | Weak responder, dry electrodes, ring-hand motion. | Gentle re-prompt about every 20 s, as often as it takes; with no skin contact it waits for the straps (`glow.js` `retry()`, `feel` phase). |
 | Finger pointer | The IMU fusion gives a pointing direction, and the game smooths it (`game.html:375-392`). | Slow yaw drift (no magnetometer). | Hold still, aimed at the screen (it auto-centres), or touch the screen: touch overrides the ring for 4 s (`game.html:373`). |
 | Helping hand | Stress at 45 or above for 4 s turns it on; 32 or below for 10 s turns it off. It's logged as a `lantern adapt` marker (`game.html:466-491`). | The wearer is calm (good!). | **A** in dev mode. It's logged as "forced (dev)", so it's never presented as real. |
 | World reacts to calm | `world.calm = 1 - stress/60`, smoothed over 5 s. That drives the aurora, stars and sea glow (`game.html:458-462`, 588-622). | The index lags 10-60 s (README:200-202). | Point it out on the care-view timeline instead. |
@@ -139,7 +139,7 @@ once more" (`glow.js:450-458`, `retry` 485). That costs about 18 s, so drop the 
 | **Warm simulator** (start it at T-5) | `.\.venv\Scripts\python.exe -m stresskit serve --sim --http-port 8770 --no-record --profile data\sim-profile.json`. Note that `--port` is the **serial** port and `--http-port` is the web port. Pointing `--profile` at a throwaway file keeps `data/profile.json` safe. Open `http://localhost:8770/game?dev=1&pace=4` and `/nurse`. Say **"this is the simulated wearer"** out loud. The overlay header reads `simulator` (`game.html:320`). |
 | In the simulator | Open the sim dashboard (`http://localhost:8770/`) and set the **Simulator → motion** select to **still** (`index.html:293`). The default `auto` pattern keeps the simulated finger moving 36 s of every 42 s (`sim.py` `MOTION_SCHEDULE`), so the game's "hand still" rule rejects most readings and the Rest pre/post often comes back empty. Aim with touch or mouse instead. Glow breaths are answered 85 % of the time (`server.py:275-277`). The scripted scenario has a 90 s stressor at 158-248 s of each 578 s loop (`sim.py:40-47`). In a test run the helping hand switched on **by itself** about 25 s into it. For on-demand stress, use the dashboard's Simulator slider at about 80 % (`index.html:284-295`). Allow 10-30 s. |
 | **Pointer drifts or jitters** | Touch or mouse works at any time. In auto mode a touch takes over (`game.html:373`). Or use ⚙ → Controls → "Touch / mouse only". Roots re-centres itself at each start (`roots.js:472-484`). |
-| **Breath not seen twice** | Click "Skip this breath". Say: "It never pretends to have seen a breath. About 1 in 5 people respond weakly." Show the live trace to prove the signal is there. |
+| **Breath not seen twice** | Coach a bigger, quicker breath ("as if about to dive under water") and check the straps are snug. If it still doesn't register, press Finish. Say: "It never pretends to have seen a breath. About 1 in 5 people respond weakly." Show the live trace to prove the signal is there. |
 | **Strap slipped** ("skin: not on") | Re-seat it. The last value is held for 15 s (`engine.py:86`). If the level shifted 30 % or more, it recalibrates by itself. Carry on with the parts that don't need the index. |
 | **Tab froze / page error** | Reload the game tab. Progress is in localStorage, and the server keeps the marks and the stress history, so the care view rebuilds (`server.py:221-235`). Reloading costs about 17 s of Welcome and breath. |
 | **No sound** | Tap the canvas once. Then check ⚙ → Sound. |

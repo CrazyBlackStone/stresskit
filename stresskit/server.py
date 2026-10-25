@@ -20,6 +20,7 @@ import json
 import logging
 import math
 import random
+import re
 import time
 from collections import deque
 from pathlib import Path
@@ -109,14 +110,62 @@ class ImuRecorder:
         self._f.close()
 
 
+# A game run: a round through its quiet Rest scene (where stress is read), or the Kind words scene.
+RUN_START = re.compile(r"lantern (?:round (\w+)|(affirm)) start$")
+RUN_END = re.compile(r"lantern (?:rest \w+|round \w+ cancel|affirm done)\b")
+
+
+class RunRecorder:
+    """One CSV per game run, time zeroed at its start: skin conductance at 10 Hz plus every event, with the
+    wall clock alongside, ready to line up with a screen recording (e.g. as a video overlay)."""
+
+    COLS = ["t_s", "clock", "host_time", "eda_us", "scl_us", "stress", "level", "contact", "signal", "event"]
+
+    def __init__(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self._f = path.open("w", newline="")
+        self._w = csv.writer(self._f)
+        self._w.writerow(self.COLS)
+        self._events: list[str] = []
+        self._t0: float | None = None
+        self._n = 0
+
+    def event(self, text: str) -> None:
+        self._events.append(text.replace(",", ";"))
+
+    def write(self, s: Sample, eng: StressEngine) -> None:
+        if self._f.closed:
+            return
+
+        def f(x, nd=4):
+            return "" if x is None or x != x else f"{x:.{nd}f}"
+        if self._t0 is None:
+            self._t0 = s.host_time
+        scl = eng._tonic.median() if len(eng._tonic) else None
+        clock = time.strftime("%H:%M:%S", time.localtime(s.host_time)) + f".{int(s.host_time * 1000) % 1000:03d}"
+        self._w.writerow([f"{s.host_time - self._t0:.2f}", clock, f"{s.host_time:.3f}", f(eng.y), f(scl),
+                          f(eng.stress, 1), eng.level, int(eng.contact), eng.signal, " | ".join(self._events)])
+        self._events.clear()
+        self._n += 1
+        if self._n % 20 == 0:  # readable while the run is still going
+            self._f.flush()
+
+    def close(self) -> None:
+        self._f.close()
+
+
 class Hub:
     """Owns the engine; fans results out to WebSocket clients. Runs entirely on the event loop."""
 
     def __init__(self, engine: StressEngine, recorder: Recorder | None, source: str,
-                 imu_recorder: ImuRecorder | None = None):
+                 imu_recorder: ImuRecorder | None = None, runs_dir: Path | None = None):
         self.engine = engine
         self.recorder = recorder
         self.imu_recorder = imu_recorder
+        self.runs_dir = runs_dir  # None: don't record runs
+        self.run: RunRecorder | None = None
+        self._run_ends = False
         self.source = source
         self.device_status = "starting"
         self.clients: dict[asyncio.Queue, dict] = {}  # queue -> subscription prefs
@@ -133,6 +182,7 @@ class Hub:
         # Simulated EDA has no motion artifacts, so only gate SCRs on real hardware.
         self.motion_gating = source == "serial"
         self._t_offset: float | None = None
+        self._prev_sample: tuple[float, float, float] | None = None  # (device t, host time, engine t)
         self._next_state = 0.0
 
     # -------------------------------------------------------------- data in
@@ -140,8 +190,19 @@ class Hub:
     def on_sample(self, s: Sample) -> None:
         if self._t_offset is None:
             self._t_offset = s.t
+        if self._prev_sample is not None:
+            dev, host, t_prev = self._prev_sample
+            d_host = s.host_time - host
+            if abs((s.t - dev) - d_host) > 2.0:
+                # The board's clock disagrees with ours: it restarted (a reseated cable can reset it, and its
+                # clock starts again at 0) or skipped. Follow the host clock, so the engine's time never runs
+                # backwards (that would stall its timers, e.g. finishing the baseline, for as long as it went back).
+                self._t_offset = s.t - (t_prev + max(d_host, 0.01))
+                log.info("device clock jumped by %.1f s; re-anchored", (s.t - dev) - d_host)
+        t = s.t - self._t_offset
+        self._prev_sample = (s.t, s.host_time, t)
         eng = self.engine
-        events = eng.process(s.t - self._t_offset, s.u, s.u_sd)
+        events = eng.process(t, s.u, s.u_sd)
         self.last_sample_at = s.host_time
         if self.recorder:
             for e in events:
@@ -150,6 +211,18 @@ class Hub:
                 elif e["type"] in ("phase", "level", "artifact", "contact", "notice", "reference"):
                     self.recorder.mark(f"{e['type']}:{e.get('phase') or e.get('level') or e.get('contact', '')}")
             self.recorder.write(s, eng)
+        if self.run:
+            for e in events:
+                if e["type"] == "scr":
+                    kind = "cued" if e["cued"] else "motion" if e["motion"] else "counted"
+                    self.run.event(f"scr +{e['amplitude_us']:.3f} uS {kind}")
+                elif e["type"] in ("level", "phase"):
+                    self.run.event(f"{e['type']} {e.get('level') or e.get('phase')}")
+                elif e["type"] == "contact":
+                    self.run.event("contact on" if e.get("contact") else "contact off")
+            self.run.write(s, eng)
+            if self._run_ends:
+                self.end_run()
         now = s.host_time
         for e in events:
             e["time"] = round(now, 3)
@@ -184,6 +257,24 @@ class Hub:
         self.device_status = status
         log.info("device: %s", status)
         self.broadcast({"type": "status", "time": round(time.time(), 3), "device": status})
+
+    def run_mark(self, label: str) -> None:
+        """Game markers open and close the per-run recordings (see RUN_START / RUN_END)."""
+        m = RUN_START.match(label)
+        if m and self.runs_dir is not None:
+            self.end_run()
+            prefix = "sim-run" if self.source == "simulator" else "run"
+            self.run = RunRecorder(self.runs_dir / time.strftime(f"{prefix}-%Y%m%d-%H%M%S-{m.group(1) or m.group(2)}.csv"))
+            log.info("recording run to %s", self.run.path)
+        if self.run:
+            self.run.event(label)
+            self._run_ends = bool(RUN_END.match(label))  # closes after the next sample, which carries the label
+
+    def end_run(self) -> None:
+        if self.run:
+            self.run.close()
+            self.run = None
+        self._run_ends = False
 
     # -------------------------------------------------------------- data out
 
@@ -270,6 +361,7 @@ class Hub:
             label = str(msg.get("label", "mark"))[:80]
             if self.recorder:
                 self.recorder.mark(f"mark:{label}")
+            self.run_mark(label)
             mark = {"type": "mark", "time": round(time.time(), 3), "t": round(eng.t, 2), "label": label}
             self.marks.append(mark)
             self.broadcast(mark)
@@ -281,6 +373,8 @@ class Hub:
                 self.sim.responses.append((self.sim.t + random.uniform(1.0, 2.5), random.uniform(0.12, 0.3)))
             if self.recorder:
                 self.recorder.mark("cue:breath")
+            if self.run:
+                self.run.event("breath cue")
         elif cmd == "imu_recenter":
             result = self.motion.recenter()
         elif cmd == "imu_forward":
@@ -511,7 +605,7 @@ async def serve(
         if not replay:
             imu_recorder = ImuRecorder(data_dir / f"{stem}-imu.csv")
     source = "simulator" if sim else f"replay:{replay.name}" if replay else "serial"
-    hub = Hub(engine, recorder, source, imu_recorder)
+    hub = Hub(engine, recorder, source, imu_recorder, runs_dir=data_dir / "runs" if record else None)
 
     voice = CartesiaVoice.from_env(data_dir)
     app = build_app(hub, voice)
@@ -521,7 +615,7 @@ async def serve(
     url = f"http://{'localhost' if host in ('0.0.0.0', '127.0.0.1') else host}:{http_port}"
     print(f"stresskit {__version__}: dashboard {url}/   websocket ws://{url.split('://')[1]}/ws", flush=True)
     if recorder:
-        print(f"recording to {recorder.path}", flush=True)
+        print(f"recording to {recorder.path}; each game run also to {data_dir / 'runs'}", flush=True)
     print("Cartesia voice: " + (f"on (voice {voice.voice_id}, {voice.model})" if voice.configured else
           "off (set CARTESIA_API_KEY or put the key in data/cartesia.key; the game falls back meanwhile)"), flush=True)
 
@@ -562,4 +656,5 @@ async def serve(
             recorder.close()
         if imu_recorder:
             imu_recorder.close()
+        hub.end_run()
         await runner.cleanup()

@@ -165,9 +165,10 @@ never sees a stress number.
   `{"cmd":"expect_response"}` first; the SCR that follows is tagged `cued` and doesn't count as
   stress. SCRs that start while the sensor hand moves are tagged `motion` and don't count either.
   The game waits for that response: a cued SCR has to start after the cue (2 s slack, since people
-  often breathe in during the countdown) and peak 1–14 s after it. If none comes, the lantern
-  gently asks for the breath again instead of moving on. With no sensor reading, the patient taps
-  "I took my breath"; after two unanswered tries a quiet "Skip this breath" appears.
+  often breathe in during the countdown) and peak 1–14 s after it. The game never gives up on the
+  breath: if none comes, the lantern gently asks again, as often as it takes, and with no skin
+  contact it asks for the fingers in the straps and waits. Only Finish leaves early. The lantern
+  says each cue aloud ("Take a deep breath in.", "And slowly out.", "The lighthouse heard you.").
 
 Stress is read in the quiet scene after each round (only while the hand is still) and compared
 with the minute before it. The activity that helps most gets a "bloom" bonus. Progress is
@@ -244,6 +245,12 @@ python -m stresskit ports                                            # list seri
 
 Every `serve` session is recorded to `data/session-*.csv`, including your markers. That's handy
 for tuning thresholds offline: all of them live in `EngineConfig` in `stresskit/engine.py`.
+
+Each game run (a round through its Rest scene, or Kind words) also gets its own
+`data/runs/run-<date>-<time>-<activity>.csv`, made for overlaying on a screen recording: `t_s` from
+0 at the run's start, the wall `clock` (to line it up with the video), skin conductance (`eda_us`,
+10 Hz), `scl_us`, `stress`, `level`, `contact`, `signal`, and an `event` column with every SCR
+(`cued` / `counted` / `motion`), breath cue and game marker. `--no-record` turns both off.
 
 ## Troubleshooting
 
