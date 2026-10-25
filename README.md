@@ -151,6 +151,26 @@ Messages also carry the raw `accel` (g) and bias-free `gyro` (°/s), `lin_accel`
 `still`. `GET /api/imu` returns the latest one. Send `{"cmd":"subscribe","imu":false}` to stop the
 stream on a connection. HANDOFF.md has the full field list.
 
+### Lantern, the calming game
+
+`http://localhost:8765/game` is a calming game for patients waiting before surgery; it runs in any
+browser (tablet, phone, laptop). `http://localhost:8765/nurse` is the caregiver view: the stress
+timeline, which activity calms this patient most, and the change since the start. The patient
+never sees a stress number.
+
+* **Roots**: trace a glowing vine with the finger sleeve (IMU pointer), or touch / mouse.
+* **Sight**: 5-4-3-2-1 grounding. Find hidden things; select by aiming and tapping the finger
+  (a jolt in `lin_accel`), holding still on a target, or tapping the screen.
+* **Glow**: one big, quick breath in, then a slow breath out. The game sends
+  `{"cmd":"expect_response"}` first; the SCR that follows is tagged `cued` and doesn't count as
+  stress. SCRs that start while the sensor hand moves are tagged `motion` and don't count either.
+
+Stress is read in the quiet scene after each round (only while the hand is still) and compared
+with the minute before it. The activity that helps most gets a "bloom" bonus. Progress is
+skill-based XP with a ceiling per round, so reaching dawn takes everyone a while; `?pace=4`
+speeds it up for demos. Progress is saved per device; Settings → New patient resets it and
+restarts the baseline. `scr` messages now carry `cued`, `motion` and `counted`.
+
 ### REST (for engines that prefer polling)
 
 `GET /api/state` returns the latest state. `POST /api/command` takes a command body like

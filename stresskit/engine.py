@@ -94,6 +94,14 @@ class EngineConfig:
     tonic_follow_below_phasic: float = 0.2
     reattach_tolerance: float = 0.3  # |log SCL change| across a contact gap that forces re-baseline
 
+    # Excluded SCRs: a big inhale the game asked for (expect_response) and SCRs that start while the
+    # sensor hand moves (note_motion) are reported but don't count toward the stress index.
+    # Matched on the SCR's peak: onset comes 1-3 s after a big breath and the rise takes 1-3 s more.
+    # (The detected onset can sit early when the previous response is still decaying.)
+    cue_delay_s: float = 1.5
+    cue_window_s: float = 8.0
+    motion_margin_s: float = 1.0  # motion this close before an SCR's onset (or during its rise) taints it
+
 
 @dataclass
 class Profile:
@@ -205,6 +213,9 @@ class StressEngine:
         self._open_capture: dict | None = None
         self._open_seen_at_start = False
         self._reference: dict | None = None
+        self._cue: tuple[float, float] | None = None
+        self._last_motion = -math.inf
+        self.n_cued = self.n_motion = 0
         self._pending: list[dict] = []
 
     # ------------------------------------------------------------------ sensor model
@@ -307,6 +318,16 @@ class StressEngine:
             self._profile_changed()
         self._emit("reference", active=False, **summary)
         return summary
+
+    def expect_response(self, seconds: float | None = None) -> dict:
+        """The user is about to take a big breath on cue: its SCR is expected, not stress."""
+        cfg = self.cfg
+        self._cue = (self.t + cfg.cue_delay_s, self.t + (seconds or cfg.cue_window_s))
+        return {"ok": True, "until_t": round(self._cue[1], 2)}
+
+    def note_motion(self) -> None:
+        """The sensor hand is moving right now (from the IMU)."""
+        self._last_motion = self.t
 
     def clear_personalization(self) -> None:
         self.profile.tonic_full = self.profile.rate_full = self.profile.reference = None
@@ -479,14 +500,24 @@ class StressEngine:
     def _on_scr(self, scr: SCR) -> None:
         self.scrs.append(scr)
         del self.scrs[:-200]
-        self._rate.add(scr.t_peak, scr.amplitude_us)
-        if self._baseline is not None and self.phase == BASELINE:
-            self._baseline.scr_times.append(scr.t_peak)
-        if self._reference is not None:
-            self._reference["scrs"].append(scr.t_peak)
+        cue = self._cue
+        cued = cue is not None and cue[0] <= scr.t_peak <= cue[1]
+        motion = not cued and self._last_motion >= scr.t_onset - self.cfg.motion_margin_s
+        if cued:
+            self.n_cued += 1
+            self._cue = None  # one breath, one response
+        elif motion:
+            self.n_motion += 1
+        else:
+            self._rate.add(scr.t_peak, scr.amplitude_us)
+            if self._baseline is not None and self.phase == BASELINE:
+                self._baseline.scr_times.append(scr.t_peak)
+            if self._reference is not None:
+                self._reference["scrs"].append(scr.t_peak)
         self._emit(
             "scr", t=round(scr.t_peak, 2), t_onset=round(scr.t_onset, 2),
             amplitude_us=round(scr.amplitude_us, 4), rise_s=round(scr.rise_time, 2),
+            cued=cued, motion=motion, counted=not (cued or motion),
         )
 
     def _baseline_step(self, t: float, valid: bool) -> None:
@@ -667,4 +698,6 @@ class StressEngine:
             "scr_count": len(self.scrs),
             "last_scr_ago_s": round(self.t - self.scrs[-1].t_peak, 1) if self.scrs else None,
             "artifacts": self.n_artifacts,
+            "scr_excluded": {"cued": self.n_cued, "motion": self.n_motion},
+            "cue_active": self._cue is not None and self.t <= self._cue[1],
         }

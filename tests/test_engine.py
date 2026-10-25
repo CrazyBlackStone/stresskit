@@ -171,3 +171,45 @@ def test_wrong_pot_offset_still_works():
         assert fraction(log, "rest", 120, lambda lv, st, s: not st) == 1.0
         stressed.append(fraction(log, "stress", 45, lambda lv, st, s: st))
     assert sum(stressed) / len(stressed) > 0.75, stressed
+
+
+# --------------------------------------------------------------------------- excluded SCRs
+
+def _breathing_session(mode: str, seed: int = 6):
+    """Rest, then a big cued breath every 10 s that triggers a strong SCR 1.5 s later.
+
+    mode: "cued" (the game announces each breath), "motion" (hand moving throughout), "none".
+    Returns (engine, max stress during the breathing segment).
+    """
+    sim = EDASimulator(seed=seed, loop=False, scenario=[
+        Segment(8, 0, False, "off"), Segment(150, 0.05, True, "rest"), Segment(120, 0.05, True, "breaths"),
+    ])
+    eng, peak, next_breath = StressEngine(), 0.0, None
+    while sim.t < sim.total_seconds:
+        t, c, sd = sim.step()
+        eng.process(t, c / sim.full_scale, sd / sim.full_scale)
+        if sim.label != "breaths":
+            continue
+        if next_breath is None or t >= next_breath:
+            next_breath = t + 10.0
+            if mode == "cued":
+                eng.expect_response()
+            sim.responses.append((t + 1.5, 0.4))
+        if mode == "motion":
+            eng.note_motion()
+        peak = max(peak, eng.stress or 0.0)
+    return eng, peak
+
+
+def test_cued_breaths_are_not_stress():
+    plain, plain_peak = _breathing_session("none")
+    assert plain_peak > 35  # sanity: uncued, six big SCRs a minute push the index well up
+    cued, cued_peak = _breathing_session("cued")
+    assert cued.n_cued >= 10
+    assert cued_peak < 20
+
+
+def test_scrs_during_hand_motion_are_not_stress():
+    eng, peak = _breathing_session("motion")
+    assert eng.n_motion >= 10
+    assert peak < 20

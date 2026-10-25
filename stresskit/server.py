@@ -1,6 +1,8 @@
 """HTTP + WebSocket server: sensor -> StressEngine -> any number of clients (dashboard, game).
 
     GET  /             live dashboard
+    GET  /game         Lantern, the calming game
+    GET  /nurse        caregiver view of a game session
     GET  /ws           WebSocket: JSON messages (see README), send {"cmd": ...} to control
     GET  /api/state    latest state snapshot (for engines that prefer polling)
     GET  /api/imu      latest IMU / finger-tracing sample
@@ -13,6 +15,8 @@ import asyncio
 import csv
 import json
 import logging
+import math
+import random
 import time
 from collections import deque
 from pathlib import Path
@@ -31,6 +35,9 @@ log = logging.getLogger("stresskit")
 WEB_DIR = Path(__file__).resolve().parent / "web"
 STATE_HZ = 4.0
 HISTORY_S = 180.0
+STRESS_HISTORY_S = 3 * 3600.0  # 1 Hz stress log for the caregiver view
+MOVING_GYRO_DPS = 20.0
+MOVING_ACCEL_G = 0.06
 
 
 class Recorder:
@@ -111,11 +118,16 @@ class Hub:
         self.clients: dict[asyncio.Queue, dict] = {}  # queue -> subscription prefs
         self.history: deque[dict] = deque()
         self.recent_events: deque[dict] = deque(maxlen=200)
+        self.stress_history: deque[list] = deque()  # [time, stress, level, reliable] at 1 Hz
+        self.marks: deque[dict] = deque(maxlen=1000)
+        self._next_stress_log = 0.0
         self.sim: EDASimulator | None = None
         self.motion_sim: MotionSimulator | None = None
         self.motion = MotionTracker(forward=engine.profile.imu_forward or AXES["+x"])
         self.last_sample_at = 0.0
         self.last_imu_at = 0.0
+        # Simulated EDA has no motion artifacts, so only gate SCRs on real hardware.
+        self.motion_gating = source == "serial"
         self._t_offset: float | None = None
         self._next_state = 0.0
 
@@ -147,10 +159,18 @@ class Hub:
         if now >= self._next_state:
             self._next_state = now + 1.0 / STATE_HZ
             self.broadcast(self.state())
+        if now >= self._next_stress_log:
+            self._next_stress_log = now + 1.0
+            self.stress_history.append([round(now, 1), _r1(eng.stress), eng.level,
+                                        eng.phase == "ready" and eng.signal == "ok"])
+            while self.stress_history and now - self.stress_history[0][0] > STRESS_HISTORY_S:
+                self.stress_history.popleft()
 
     def on_imu(self, s: ImuSample) -> None:
         msg = self.motion.update(s)
         self.last_imu_at = s.host_time
+        if self.motion_gating and _moving(msg):
+            self.engine.note_motion()
         msg["time"] = round(s.host_time, 3)
         if self.imu_recorder:
             self.imu_recorder.write(s, msg)
@@ -209,6 +229,8 @@ class Hub:
                            "exit_stressed": cfg.exit_stressed},
             "history": list(self.history),
             "events": [e for e in self.recent_events if e["type"] == "scr"],
+            "stress_history": list(self.stress_history),
+            "marks": list(self.marks),
             "state": self.state(),
         }
 
@@ -244,8 +266,17 @@ class Hub:
             label = str(msg.get("label", "mark"))[:80]
             if self.recorder:
                 self.recorder.mark(f"mark:{label}")
-            self.broadcast({"type": "mark", "time": round(time.time(), 3), "t": round(eng.t, 2), "label": label})
+            mark = {"type": "mark", "time": round(time.time(), 3), "t": round(eng.t, 2), "label": label}
+            self.marks.append(mark)
+            self.broadcast(mark)
             result = {"ok": True}
+        elif cmd == "expect_response":
+            result = eng.expect_response(float(msg["seconds"]) if "seconds" in msg else None)
+            if self.sim is not None and random.random() < 0.85:
+                # Simulated wearer: a big breath usually produces an SCR 1-2.5 s later.
+                self.sim.responses.append((self.sim.t + random.uniform(1.0, 2.5), random.uniform(0.12, 0.3)))
+            if self.recorder:
+                self.recorder.mark("cue:breath")
         elif cmd == "imu_recenter":
             result = self.motion.recenter()
         elif cmd == "imu_forward":
@@ -285,6 +316,17 @@ class Hub:
             return {"ok": False, "error": f"unknown cmd {cmd!r}"}
         self.broadcast(self.state())
         return result
+
+
+def _r1(x: float | None) -> float | None:
+    return None if x is None else round(x, 1)
+
+
+def _moving(imu: dict) -> bool:
+    """Hand motion big enough to shift the electrodes; looser than the tracker's 'still'."""
+    gyro = math.sqrt(sum(c * c for c in imu["gyro"]))
+    lin = math.sqrt(sum(c * c for c in imu["lin_accel"]))
+    return gyro > MOVING_GYRO_DPS or lin > MOVING_ACCEL_G
 
 
 # ------------------------------------------------------------------ sources
@@ -338,8 +380,10 @@ def build_app(hub: Hub) -> web.Application:
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         return resp
 
-    async def index(_: web.Request) -> web.StreamResponse:
-        return web.FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+    def page(name: str) -> Callable:
+        async def handler(_: web.Request) -> web.StreamResponse:
+            return web.FileResponse(WEB_DIR / name, headers={"Cache-Control": "no-cache"})
+        return handler
 
     async def api_state(_: web.Request) -> web.Response:
         return web.json_response(hub.state())
@@ -392,7 +436,9 @@ def build_app(hub: Hub) -> web.Application:
         return ws
 
     app = web.Application(middlewares=[cors])
-    app.router.add_get("/", index)
+    app.router.add_get("/", page("index.html"))
+    app.router.add_get("/game", page("game.html"))
+    app.router.add_get("/nurse", page("nurse.html"))
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/api/state", api_state)
     app.router.add_get("/api/imu", api_imu)
