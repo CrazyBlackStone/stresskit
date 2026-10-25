@@ -9,8 +9,9 @@
    as it takes, and with no skin contact it waits for the hand before asking again. Only Finish leaves early.
    A seen breath charges the lighthouse, its beam reveals something new, and then the player aims the beam: hold
    the light on boats, ducklings, fireflies, a whale, shooting stars or a rare golden fish until a ring fills to
-   guide it home. Quick catches build a chain (up to x6); light resting on empty
-   water lets it cool. Each breath makes the sea busier; challengeFactor() and the helping hand slow it all down. */
+   guide it home. Quick catches build a chain (up to x6); light resting on empty water lets it cool. Each breath
+   makes the sea busier; challengeFactor() and the helping hand slow it all down. Between breaths the lantern says
+   a kind word for the player to say back (as in the Kind words scene), and each one said adds a star. */
 
 // ---- small drawing helpers (all names prefixed glow*, every lantern file shares one global scope)
 
@@ -60,6 +61,7 @@ const GLOW_REVEALS = [
 const GLOW_VOICE = { 0: "You lit the lighthouse!", 2: "Look at everything you've found.", 4: "The whole sea is glowing now." };
 const GLOW_SAY = { in: "Take a deep breath in.", again: "Big breath in.", out: "And slowly out.", heard: "The lighthouse heard you." };
 const GLOW_FEEL = "Rest your fingers in the straps. I'll wait for you.";
+const GLOW_KW_AGAIN = "Take your time. Say it whenever you're ready.";
 
 // ---- waiting for the breath: the skin's answer to a cued breath may peak up to GLOW_CUE_S later
 const GLOW_CUE_S = 14;  // late responders often peak 10-13 s after the breath
@@ -398,6 +400,7 @@ const Glow = {
   enter(meta) {
     this.meta = meta; this.n = 0; this.total = 6; this.score = 0; this.ended = null;
     this.phase = "intro"; this.pt = 0; this.flare = 0; this.got = false; this.cueAt = null; this.tries = 0; this.feltFor = 0;
+    this.kwList = KIND_BUILTIN.slice().sort(() => Math.random() - 0.5); this.kwI = 0; this.kw = null;
     this.exDur = 6; this.half = false; this.restMode = null;
     this.rev = [0, 0, 0, 0, 0]; this.revTarget = [0, 0, 0, 0, 0]; this.revOn = [false, false, false, false, false];
     this.revealIdx = null; this.revealDur = 0; this.beamX = W * 0.3; this.beamY = H * 0.7; this.beamI = 0; this.beamFrom = null;
@@ -409,7 +412,7 @@ const Glow = {
     this.best0 = (save.best && save.best.glow) || 0;
     setUI(`${topBar(`<span class="pill">✨ Glow <b id="gsc">0</b></span><span class="pill" id="gch">chain ×1</span>` +
       `<span class="pill" id="gbe">best ${this.best0}</span><button class="btn" id="finish" style="min-height:44px;padding:0 18px">Finish</button>`)}<div class="spacer"></div>
-      <div class="prompt fade-in" id="gp"></div><div class="spacer" style="flex:.35"></div>`);
+      <div class="prompt fade-in" id="gp"></div><div class="row" id="gkw"></div><div class="spacer" style="flex:.35"></div>`);
     wireGear();
     this.off = (m) => {
       if (m.type === "scr" && m.cued && this.cueAt != null && !this.got) { this.got = true; this.flare = 1; sfx.chime(4, 0.07); }
@@ -417,9 +420,10 @@ const Glow = {
     link.on(this.off);
     wireFinish(this);
     this.say("Light the lighthouse", "When the lantern asks, take one big, quick breath in. It charges the lighthouse, then you aim its beam to guide things home.");
-    speech.warm([...Object.values(GLOW_SAY), ...GLOW_RETRY.map((L) => L[2]), GLOW_FEEL, ...Object.values(GLOW_VOICE)]);
+    speech.warm([...Object.values(GLOW_SAY), ...GLOW_RETRY.map((L) => L[2]), GLOW_FEEL, ...Object.values(GLOW_VOICE),
+      ...this.kwList.slice(0, this.total - 1), ...KIND_PRAISE, GLOW_KW_AGAIN]);
   },
-  exit() { const i = link.handlers.indexOf(this.off); if (i >= 0) link.handlers.splice(i, 1); this.cueAt = null; },
+  exit() { const i = link.handlers.indexOf(this.off); if (i >= 0) link.handlers.splice(i, 1); this.cueAt = null; this.kw = null; ear.release(); },
   say(h, p) { const el = $("#gp"); if (el) el.innerHTML = h ? `<h2>${h}</h2><p>${p}</p>` : ""; },
   to(phase, h, p) { this.phase = phase; this.pt = 0; if (h) this.say(h, p); },
   speak(text, force) {  // the voice bubble, without lines tripping over each other
@@ -454,6 +458,9 @@ const Glow = {
     else if (P === "feel") {  // no skin contact: wait for the hand, however long it takes, then ask again
       this.feltFor = glowFeels() ? this.feltFor + dt : 0;
       if (this.feltFor > 2) this.toReady();
+    } else if (P === "kind") {
+      const kw = this.kw;
+      if (kw && kw.state === "listen" && !kw.again && clock() - kw.since > 9 && !ear.talking && !ear.busy) this.kwAgain();
     } else if (P === "reveal") {
       if (this.revealIdx != null && !this.revOn[this.revealIdx] && this.pt > 2) this.revOn[this.revealIdx] = true;
       if (this.pt > this.revealDur) this.toBeam();
@@ -615,6 +622,73 @@ const Glow = {
     this.charge = 0;
     for (const t of this.tg) if (!t.saved) { t.leave = t.leave || 1e-3; t.lock = 0; t.inB = false; }
     if (this.n >= this.total) { this.finish(); return; }
+    this.kindWord();
+  },
+
+  // ---- kind words between breaths: the lantern says an affirmation and the player says it back, as in the
+  // Kind words scene (same listening, lenient match and star). Then the quiet rest, then the next breath.
+  kindWord() {
+    const aff = this.kwList[this.kwI++ % this.kwList.length];
+    this.kw = { aff, state: "lead", since: clock(), again: false };
+    this.to("kind");
+    this.kwShow("Say it with me", "");
+    speech.say(aff, () => setTimeout(() => this.kwListen(), 300));  // only listen once it has finished talking
+  },
+  kwShow(h, p) {
+    const el = $("#gp");
+    if (el) el.innerHTML = `<h2>${esc(h)}</h2><div class="kw-aff">“${esc(this.kw.aff.replace(/[.]$/, ""))}”</div><p id="gkw-p">${p}</p>`;
+  },
+  kwButtons(on) {
+    const el = $("#gkw");
+    if (!el) return;
+    el.innerHTML = on ? `<button class="btn primary" id="gkw-said">I said it</button><button class="linkbtn" id="gkw-skip">Skip this one</button>` : "";
+    if (on) { $("#gkw-said").onclick = () => this.kwGot("tapped"); $("#gkw-skip").onclick = () => this.kwDone(true); }
+  },
+  kwListen() {
+    const kw = this.kw;
+    if (scene !== this || this.phase !== "kind" || !kw || (kw.state !== "lead" && kw.state !== "listen")) return;
+    if (kw.state === "lead") kw.since = clock();
+    kw.state = "listen";
+    link.send({ cmd: "expect_response", seconds: 12 });  // speaking aloud raises skin conductance too: not stress
+    const hearing = ear.start((alts) => {
+      if (this.kw !== kw || kw.state !== "listen") return;
+      if (Math.max(...alts.map((a) => kindMatch(a, kw.aff))) >= KIND_MATCH) this.kwGot("said");
+    }, () => {  // listening stopped by itself: carry on, or switch to tapping if the mic was refused
+      if (scene !== this || this.kw !== kw || kw.state !== "listen") return;
+      if (ear.available()) setTimeout(() => this.kwListen(), 250); else this.kwTap();
+    });
+    if (!hearing) return this.kwTap();
+    const p = $("#gkw-p");
+    if (p) p.innerHTML = `<span class="mic"></span>Listening… say it out loud`;
+  },
+  kwTap() {
+    const p = $("#gkw-p");
+    if (p) p.textContent = "Say it out loud, or quietly to yourself, then tap “I said it”.";
+    this.kwButtons(true);
+  },
+  kwAgain() {  // gently, once; then a tap and a skip are offered too
+    const kw = this.kw;
+    kw.again = true; kw.state = "lead"; ear.stop();
+    speech.say(GLOW_KW_AGAIN, () => setTimeout(() => this.kwListen(), 300));
+    this.kwButtons(true);
+  },
+  kwGot(how) {
+    const kw = this.kw;
+    if (!kw || (kw.state !== "listen" && kw.state !== "lead")) return;
+    kw.state = "praise"; ear.stop(); this.kwButtons(false);
+    save.kind = (save.kind || 0) + 1; persist(); kindStars.bornAt = clock();
+    const [sx, sy] = kindStarPos(Math.min(59, save.kind - 1));
+    sfx.sparkle(); fx.burst(sx, sy, { color: "#ffe08a", n: 30, speed: 90, life: 1.6 }); this.flare = 1;
+    link.mark(`lantern affirm ${how} ${kw.aff}`.slice(0, 80));
+    const praise = KIND_PRAISE[(this.kwI - 1) % KIND_PRAISE.length];
+    this.say(praise, "A new star is shining for you.");
+    speech.say(praise, () => setTimeout(() => this.kwDone(), 900));
+  },
+  kwDone(skipped) {
+    const kw = this.kw;
+    if (!kw || scene !== this || this.phase !== "kind" || (skipped && kw.state === "praise")) return;
+    if (skipped) { link.mark("lantern affirm skip"); speech.stop(); }
+    ear.stop(); this.kwButtons(false); this.kw = null;
     this.restMode = null; this.to("rest");
     this.restText();
   },
@@ -770,6 +844,15 @@ const Glow = {
     const lx = g.lanX, ly = g.lanY + Math.sin(time * 1.1) * 3, size = g.lanSize * (P === "in" ? 1 + 0.12 * k : 1);
     if (lv > 0.01) { ctx.save(); ctx.globalCompositeOperation = "lighter"; glowBlob(lx, ly, g.lanSize * 5, [255, 160, 80], 0.28 * lv); ctx.restore(); }
     drawLantern(lx, ly, size, glow, time);
+    if (P === "kind" && ear.on) {  // soft rings: the lantern is listening
+      ctx.save(); ctx.strokeStyle = flameColor(); ctx.lineWidth = 2;
+      for (let k = 0; k < 3; k++) {
+        const ph = (time * 0.6 + k / 3) % 1;
+        ctx.globalAlpha = 0.35 * (1 - ph);
+        ctx.beginPath(); ctx.arc(lx, ly, g.lanSize * (1.2 + 3 * ph), 0, 6.29); ctx.stroke();
+      }
+      ctx.restore();
+    }
 
     ctx.save(); ctx.globalCompositeOperation = "lighter";
     if (P === "ready" || P === "in") {  // motes of light gather, then rush in with the breath
@@ -841,7 +924,7 @@ const Glow = {
       ctx.restore();
     }
 
-    if (P === "rest" || P === "reveal") {  // embers drifting up between breaths
+    if (P === "rest" || P === "reveal" || P === "kind") {  // embers drifting up between breaths
       ctx.fillStyle = flameColor();
       for (let i = 0; i < 12; i++) {
         const a = (time * 0.15 + i / 12) % 1;

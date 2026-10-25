@@ -169,6 +169,7 @@ never sees a stress number.
   breath: if none comes, the lantern gently asks again, as often as it takes, and with no skin
   contact it asks for the fingers in the straps and waits. Only Finish leaves early. The lantern
   says each cue aloud ("Take a deep breath in.", "And slowly out.", "The lighthouse heard you.").
+  Between breaths it says a kind word for the patient to say back, as in Kind words (below).
 
 Stress is read in the quiet scene after each round (only while the hand is still) and compared
 with the minute before it. The activity that helps most gets a "bloom" bonus. Progress is
