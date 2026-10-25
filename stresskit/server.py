@@ -385,6 +385,12 @@ def build_app(hub: Hub) -> web.Application:
             return web.FileResponse(WEB_DIR / name, headers={"Cache-Control": "no-cache"})
         return handler
 
+    async def lantern_file(request: web.Request) -> web.StreamResponse:
+        path = WEB_DIR / "lantern" / request.match_info["name"]  # the route pattern rules out ../
+        if not path.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Cache-Control": "no-cache", "Content-Type": "text/javascript"})
+
     async def api_state(_: web.Request) -> web.Response:
         return web.json_response(hub.state())
 
@@ -439,6 +445,7 @@ def build_app(hub: Hub) -> web.Application:
     app.router.add_get("/", page("index.html"))
     app.router.add_get("/game", page("game.html"))
     app.router.add_get("/nurse", page("nurse.html"))
+    app.router.add_get("/lantern/{name:[a-z0-9_-]+\\.js}", lantern_file)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/api/state", api_state)
     app.router.add_get("/api/imu", api_imu)

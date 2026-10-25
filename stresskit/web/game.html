@@ -51,6 +51,8 @@ canvas#scene { position: fixed; inset: 0; width: 100%; height: 100%; display: bl
 .card .name { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 .card .lvl { color: var(--ink-soft); font-size: 15px; margin: 2px 0 8px; }
 .card .desc { color: var(--ink-faint); font-size: 15px; margin-top: 8px; }
+.card.invite { animation: invite 1.8s ease-in-out infinite; }
+@keyframes invite { 50% { transform: translateY(-6px); box-shadow: 0 0 40px rgba(255, 210, 122, .45); } }
 .card.bloom { border-color: rgba(255, 210, 122, .7); box-shadow: 0 0 28px rgba(255, 210, 122, .18); }
 .badge { position: absolute; top: -10px; right: 12px; background: var(--accent); color: #3a2a00; border-radius: 999px;
   padding: 2px 10px; font-size: 13px; font-weight: 700; }
@@ -81,6 +83,18 @@ canvas#scene { position: fixed; inset: 0; width: 100%; height: 100%; display: bl
 .fade-in { animation: fade 1.2s ease both; }
 @keyframes fade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .fade-in { animation: none; } .card, .bar > i { transition: none; } }
+#voice { position: fixed; left: 50%; top: max(84px, calc(env(safe-area-inset-top) + 76px)); transform: translate(-50%, -6px);
+  max-width: min(560px, calc(100vw - 32px)); padding: 12px 18px; border-radius: 18px; text-align: center; pointer-events: none;
+  background: rgba(255, 246, 214, 0.94); color: #3a2a10; font-size: clamp(16px, 2.3vw, 20px); font-weight: 600;
+  box-shadow: 0 8px 30px rgba(255, 200, 120, 0.25); opacity: 0; transition: opacity .6s, transform .6s; z-index: 4; }
+#voice.on { opacity: 1; transform: translate(-50%, 0); }
+body[data-scene="sight"] #voice { top: auto; bottom: max(120px, calc(env(safe-area-inset-bottom) + 110px)); }
+#voice::before { content: "🏮 "; }
+#assist { position: fixed; left: max(16px, env(safe-area-inset-left)); bottom: max(16px, env(safe-area-inset-bottom)); z-index: 4;
+  pointer-events: none; color: #3a2a00; background: var(--accent); border-color: transparent; font-weight: 700;
+  animation: assistPulse 2.4s ease-in-out infinite; }
+@keyframes assistPulse { 50% { box-shadow: 0 0 26px rgba(255, 210, 122, .65); } }
+@media (prefers-reduced-motion: reduce) { #assist { animation: none; } }
 /* dev mode: live sensor readout for the team (?dev=1, the D key, or Settings). Clicks pass through. */
 #devpanel { position: fixed; z-index: 5; pointer-events: none; top: 76px; right: max(12px, env(safe-area-inset-right));
   width: min(420px, calc(100vw - 24px)); padding: 10px 12px; border-radius: 14px;
@@ -95,6 +109,8 @@ canvas#scene { position: fixed; inset: 0; width: 100%; height: 100%; display: bl
 <canvas id="scene"></canvas>
 <div id="ui"></div>
 <div class="toast pill" id="toast"></div>
+<div id="voice" role="status" aria-live="polite"></div>
+<div id="assist" class="pill" hidden>✨ Your lantern is helping</div>
 <div id="devpanel" hidden><canvas></canvas><pre></pre></div>
 <script>
 "use strict";
@@ -149,6 +165,7 @@ function freshSave() {
   return {
     flame: "Amber flame", traits: { roots: { lvl: 1, xp: 0 }, sight: { lvl: 1, xp: 0 }, glow: { lvl: 1, xp: 0 } },
     light: 0, stage: 0, collection: [], effects: { roots: [], sight: [], glow: [] }, rounds: 0, bloom: null,
+    best: { roots: 0, sight: 0, glow: 0 },
   };
 }
 function loadSave() {
@@ -330,12 +347,17 @@ const dev = {
       L.push(`rest    pre ${f(scene.r.meta.pre, 1)} · post ${el < CFG.restMeasureFrom ? `starts at ${CFG.restMeasureFrom} s (${f(el, 0)} s)` : f(stressBetween(scene.start + CFG.restMeasureFrom, now), 1)}`);
     } else if (scene && scene.meta && "pre" in scene.meta) L.push(`round   pre-round stress ${f(scene.meta.pre, 1)}`);
     L.push(`effects ${Object.keys(ACTS).map((a) => `${a} ${save.effects[a].slice(-3).join("/") || "–"}`).join(" · ")}`);
+    L.push(`adapt   challenge ×${f(challengeFactor())} · world calm ${f(world.calm)} · gentle ${f(mood.gentle)} · help ${assist.on ? "ON" : "off"}${assist.forced ? " (forced, A)" : ""} × ${assist.count}`);
     return L.join("\n");
   },
 };
 dev.panel.hidden = !dev.on;
 link.on(dev.onMsg);
-window.addEventListener("keydown", (e) => { if ((e.key === "d" || e.key === "D") && !e.repeat && !e.ctrlKey && !e.metaKey) dev.toggle(); });
+window.addEventListener("keydown", (e) => {
+  if (e.repeat || e.ctrlKey || e.metaKey) return;
+  if (e.key === "d" || e.key === "D") dev.toggle();
+  else if ((e.key === "a" || e.key === "A") && dev.on) assist.force();  // demo the helping hand without a stressed wearer
+});
 
 // ------------------------------------------------------------------ input: sleeve pointer, touch, mouse
 
@@ -421,6 +443,184 @@ function updateMood(dt) {
 }
 const timeScale = () => 1 - 0.25 * mood.gentle;
 
+// ------------------------------------------------------------------ the world reacts to the patient
+//
+// The stress number is never shown, but its effects are meant to be seen (by the patient as a
+// prettier world, by anyone watching as cause and effect):
+//   world.calm   0..1, smoothed. Calm brings out the aurora, more stars and a glowing sea.
+//   assist       turns on when stress rises during a round: the activity gets easier, a badge says
+//                "your lantern is helping", the spirit says why, and the nurse view logs it.
+//   voice        the lantern spirit talks (short lines in a bubble).
+//   sfx          soft generated sound: ocean, chimes. Optional (Settings), off until a first tap.
+//   fx           particles: bursts, sparkles, trails.
+
+const world = { calm: 0.55 };
+function updateWorld(dt) {
+  const s = stressNow();
+  const target = s == null ? 0.55 : clamp(1 - s / 60, 0, 1);  // 0 stress -> 1, 60+ -> 0
+  world.calm += (target - world.calm) * (1 - Math.exp(-dt / 5));
+}
+
+const assist = {
+  level: 0, on: false, act: null, forced: false, hiAt: null, loAt: null, count: 0,
+  ON_ABOVE: 45, OFF_BELOW: 32, ON_HOLD: 4, OFF_HOLD: 10,
+  begin(act) { this.act = act; this.on = false; this.level = 0; this.hiAt = this.loAt = null; this.count = 0; this.badge(); },
+  end() { if (this.on) this.set(false, "round over"); this.act = null; this.forced = false; this.badge(); },
+  update(dt) {
+    if (this.act && !this.forced) {
+      const s = stressNow(), now = clock();
+      if (s != null && s >= this.ON_ABOVE) { this.hiAt = this.hiAt ?? now; this.loAt = null; }
+      else if (s == null || s <= this.OFF_BELOW) { this.loAt = this.loAt ?? now; this.hiAt = null; }
+      else { this.hiAt = this.loAt = null; }
+      if (!this.on && this.hiAt != null && now - this.hiAt >= this.ON_HOLD) this.set(true, `stress ${Math.round(s)}`);
+      else if (this.on && this.loAt != null && now - this.loAt >= this.OFF_HOLD) this.set(false, s == null ? "no reading" : `stress ${Math.round(s)}`);
+    }
+    this.level += ((this.on ? 1 : 0) - this.level) * (1 - Math.exp(-dt / 1.5));
+  },
+  set(on, why) {
+    if (on === this.on) return;
+    this.on = on;
+    link.mark(`lantern adapt ${this.act || "-"} help ${on ? "on" : "off"} ${why}`.slice(0, 80));
+    this.badge();
+    if (on) {
+      this.count++;
+      const line = (scene && scene.assistLine) || "Let me help a little.";
+      voice.say(line, 5); sfx.sparkle();
+      fx.burst(W / 2, H * 0.18, { color: flameColor(), n: 26, speed: 120 });
+    }
+  },
+  force() { if (!this.act) return; this.forced = true; this.set(!this.on, "forced (dev)"); },
+  badge() {
+    const el = document.getElementById("assist");
+    if (el) el.hidden = !(this.on && this.act);
+  },
+};
+
+// Difficulty is the sensor's main lever: activities ramp up while the patient stays calm, and
+// multiply their speed and ramp rate by challengeFactor(), which drops when stress rises
+// (through the helping hand and the gentle mood). 1 = full challenge, 0.45 = eased right off.
+function challengeFactor() { return clamp(1 - 0.4 * assist.level - 0.15 * mood.gentle, 0.45, 1); }
+
+const voice = {
+  say(text, seconds = 4) {
+    const el = document.getElementById("voice");
+    if (!el) return;
+    el.textContent = text; el.classList.add("on");
+    clearTimeout(this._t); this._t = setTimeout(() => el.classList.remove("on"), seconds * 1000);
+  },
+  hush() { const el = document.getElementById("voice"); if (el) el.classList.remove("on"); },
+};
+
+// Soft generated sound. A pentatonic scale, so any sequence of chimes sounds pleasant.
+const sfx = {
+  ac: null, master: null, ocean: null,
+  enabled: (() => { try { return localStorage.getItem("lantern-sound") !== "off"; } catch (_) { return true; } })(),
+  setEnabled(v) {
+    this.enabled = v; try { localStorage.setItem("lantern-sound", v ? "on" : "off"); } catch (_) {}
+    if (this.master) this.master.gain.setTargetAtTime(v ? 0.5 : 0, this.ac.currentTime, 0.3);
+  },
+  start() {  // needs a user gesture (browser autoplay rules)
+    if (this.ac) { if (this.ac.state === "suspended") this.ac.resume(); return; }
+    try { this.ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { return; }
+    const ac = this.ac;
+    this.master = ac.createGain(); this.master.gain.value = this.enabled ? 0.5 : 0; this.master.connect(ac.destination);
+    // ocean: filtered noise swelling at ~6 breaths per minute, a quiet pacing cue
+    const len = ac.sampleRate * 4, buf = ac.createBuffer(1, len, ac.sampleRate), d = buf.getChannelData(0);
+    let b = 0; for (let i = 0; i < len; i++) { b = 0.98 * b + 0.02 * (Math.random() * 2 - 1); d[i] = b * 3; }
+    const src = ac.createBufferSource(); src.buffer = buf; src.loop = true;
+    const lp = ac.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 500;
+    const g = ac.createGain(); g.gain.value = 0.12;
+    const lfo = ac.createOscillator(), lfoG = ac.createGain(); lfo.frequency.value = 0.1; lfoG.gain.value = 0.08;
+    lfo.connect(lfoG); lfoG.connect(g.gain);
+    src.connect(lp); lp.connect(g); g.connect(this.master); src.start(); lfo.start();
+    this.ocean = g;
+  },
+  tone(freq, { dur = 1.2, vol = 0.12, type = "sine", delay = 0 } = {}) {
+    if (!this.ac || !this.enabled) return;
+    const ac = this.ac, t = ac.currentTime + delay, o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(this.master); o.start(t); o.stop(t + dur + 0.05);
+  },
+  PENTA: [261.6, 293.7, 329.6, 392.0, 440.0, 523.3, 587.3, 659.3, 784.0, 880.0],
+  chime(i = 0, vol = 0.1) { const n = this.PENTA[((i % 10) + 10) % 10]; this.tone(n, { vol }); this.tone(n * 2, { vol: vol * 0.3, dur: 0.8 }); },
+  sparkle() { [5, 7, 9].forEach((k, j) => this.tone(this.PENTA[k], { vol: 0.06, dur: 0.9, delay: j * 0.09 })); },
+  soft() { this.tone(196, { vol: 0.05, dur: 0.5, type: "triangle" }); },
+  swell(seconds = 1.5) {
+    if (!this.ac || !this.enabled) return;
+    const ac = this.ac, t = ac.currentTime;
+    [220, 277.2, 329.6].forEach((f) => {
+      const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = f; o.type = "sine";
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.05, t + seconds); g.gain.exponentialRampToValueAtTime(0.0001, t + seconds + 2.5);
+      o.connect(g); g.connect(this.master); o.start(t); o.stop(t + seconds + 2.6);
+    });
+  },
+};
+window.addEventListener("pointerdown", () => sfx.start(), { capture: true });
+
+const fx = {
+  parts: [],
+  burst(x, y, { color = "#ffd27a", n = 16, speed = 80, life = 1.4, size = 2.5, up = 0 } = {}) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * 6.283, v = speed * (0.3 + Math.random() * 0.7);
+      this.parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - up, life, age: 0, color, size: size * (0.6 + Math.random() * 0.8) });
+    }
+  },
+  sparkle(x, y, color = "#fff6cf") { this.burst(x, y, { color, n: 4, speed: 25, life: 0.9, size: 1.8 }); },
+  update(dt) {
+    for (const p of this.parts) { p.age += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.96; p.vy = p.vy * 0.96 + 10 * dt; }
+    this.parts = this.parts.filter((p) => p.age < p.life);
+  },
+  draw() {
+    ctx.save();
+    for (const p of this.parts) {
+      ctx.globalAlpha = Math.max(0, 1 - p.age / p.life); ctx.fillStyle = p.color; ctx.shadowColor = p.color; ctx.shadowBlur = 8;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, 6.29); ctx.fill();
+    }
+    ctx.restore();
+  },
+};
+
+// Aurora curtains and a glowing sea: the visible reward for calming down. The aurora is drawn
+// at 1/6 resolution and scaled up, which blurs it softly (cheap, and canvas filters aren't on iPad).
+const auroraCanvas = document.createElement("canvas"), auroraCtx = auroraCanvas.getContext("2d");
+const AURORA_BANDS = [["88,240,176", 0.16, 0.0, 0.55], ["122,200,255", 0.22, 1.7, 0.4], ["180,140,255", 0.28, 3.1, 0.3]];
+function drawAurora(time) {
+  const k = Math.pow(clamp((world.calm - 0.35) / 0.65, 0, 1), 1.2);
+  if (k < 0.02) return;
+  const S = 6, w = Math.ceil(W / S), h = Math.ceil(H * 0.5 / S);
+  if (auroraCanvas.width !== w || auroraCanvas.height !== h) { auroraCanvas.width = w; auroraCanvas.height = h; }
+  const c = auroraCtx;
+  c.clearRect(0, 0, w, h);
+  c.globalCompositeOperation = "lighter";
+  for (const [rgb, yk, ph, amt] of AURORA_BANDS) {
+    const tall = H * 0.16 / S;
+    const g = c.createLinearGradient(0, 0, 0, tall);  // one curtain column, reused via translate
+    g.addColorStop(0, `rgba(${rgb},0)`); g.addColorStop(0.75, `rgba(${rgb},${0.8 * amt * k})`); g.addColorStop(1, `rgba(${rgb},0)`);
+    c.fillStyle = g;
+    for (let x = 0; x < w; x++) {
+      const X = x * S;
+      const base = H * yk + Math.sin(X * 0.004 + time * 0.15 + ph) * H * 0.05 + Math.sin(X * 0.011 - time * 0.09) * H * 0.02;
+      const flicker = 0.65 + 0.35 * Math.sin(X * 0.03 + time * 0.6 + ph * 2);
+      c.save(); c.translate(x, base / S - tall); c.globalAlpha = flicker; c.fillRect(0, 0, 1, tall); c.restore();
+    }
+  }
+  ctx.save(); ctx.globalCompositeOperation = "lighter"; ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(auroraCanvas, 0, 0, w * S, h * S);
+  ctx.restore();
+}
+const SEA_GLOW = Array.from({ length: 90 }, () => ({ x: Math.random(), y: Math.random(), ph: rand(0, 6.28), sp: rand(0.4, 1.4) }));
+function drawSeaGlow(time, horizon) {
+  const k = clamp((world.calm - 0.3) / 0.7, 0, 1), n = Math.round(SEA_GLOW.length * k);
+  ctx.save();
+  for (let i = 0; i < n; i++) {
+    const g = SEA_GLOW[i], a = 0.5 + 0.5 * Math.sin(time * g.sp + g.ph);
+    ctx.globalAlpha = a * 0.6 * k; ctx.fillStyle = "#7ff3e0"; ctx.shadowColor = "#7ff3e0"; ctx.shadowBlur = 6;
+    ctx.beginPath(); ctx.arc(g.x * W, H * (horizon + 0.02 + g.y * (1 - horizon - 0.04)), 1.4, 0, 6.29); ctx.fill();
+  }
+  ctx.restore();
+}
+
 const STARS = Array.from({ length: 180 }, () => ({ x: Math.random(), y: Math.random() * 0.62, r: rand(0.4, 1.6), ph: rand(0, 6.28), sp: rand(0.3, 1.1) }));
 function drawSky(time, dawn = save.stage / STAGES.length, horizon = 0.62) {
   const top = mix("#070b1f", "#2a3f7a", dawn * 0.8), mid = mix("#121a3f", "#7d6fa8", dawn), low = mix("#1f2a58", "#ffb98a", dawn * dawn);
@@ -430,11 +630,12 @@ function drawSky(time, dawn = save.stage / STAGES.length, horizon = 0.62) {
   ctx.save();
   for (const s of STARS) {
     if (s.y > horizon - 0.02) continue;
-    const a = (0.35 + 0.45 * Math.sin(time * s.sp + s.ph)) * (1 - dawn * 0.85);
+    const a = (0.35 + 0.45 * Math.sin(time * s.sp + s.ph)) * (1 - dawn * 0.85) * (0.55 + 0.6 * world.calm);
     ctx.globalAlpha = Math.max(0, a); ctx.fillStyle = "#fff";
     ctx.beginPath(); ctx.arc(s.x * W, s.y * H, s.r, 0, 6.29); ctx.fill();
   }
   ctx.restore();
+  drawAurora(time);
   // moon
   const mx = W * 0.82, my = H * 0.16, mr = Math.min(W, H) * 0.045;
   const mg = ctx.createRadialGradient(mx, my, mr * 0.2, mx, my, mr * 4);
@@ -471,6 +672,7 @@ function drawSea(time, horizon = 0.62, dawn = save.stage / STAGES.length) {
     ctx.stroke();
   }
   ctx.restore();
+  drawSeaGlow(time, horizon);
 }
 function flameColor() { return FLAMES[save.flame] || FLAMES["Amber flame"]; }
 function drawLantern(x, y, size, glow = 1, time = clock()) {
@@ -595,10 +797,15 @@ function wireGear() { const g = $("#gear"); if (g) g.onclick = () => go(Settings
 // ------------------------------------------------------------------ scenes
 
 let scene = null;
+const ROUND_ACTS = ["roots", "sight", "glow"];
 function go(S, arg) {
   if (scene && scene.exit) scene.exit();
+  const wasRound = scene && ROUND_ACTS.includes(scene.act);
   scene = Object.create(S); scene.t = 0;
   input.taps = [];
+  document.body.dataset.scene = S.act || "";  // lets CSS move the voice bubble clear of a scene's prompt
+  if (ROUND_ACTS.includes(S.act) && S !== Settings) assist.begin(S.act);
+  else if (wasRound && S !== Settings) assist.end();
   scene.enter(arg);
 }
 
@@ -751,6 +958,7 @@ function pickBloom() {
   }
   return best;
 }
+function effectMean(a) { const d = save.effects[a].slice(-8); return d.length ? d.reduce((s, x) => s + x, 0) / d.length : 0; }
 function gauss() { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(6.283 * v); }
 function stageReady(i) {
   const st = STAGES[i]; if (!st) return { ok: false, need: [] };
@@ -758,11 +966,30 @@ function stageReady(i) {
   return { ok: !need.length, need };
 }
 
+const INVITES = {
+  roots: "The garden's glowing tonight. Shall we grow something?",
+  sight: "The fireflies are out tonight… want to go look for them?",
+  glow: "The lantern feels like a big, bright breath. Shall we?",
+};
 const Harbor = {
   allowComfort: true,
   enter() {
     if (!save.bloom) { save.bloom = pickBloom(); persist(); }
     this.render();
+    this.invite();
+  },
+  invite() {
+    // After a round that didn't calm (stress rose by 3+), steer toward another activity, warmly.
+    const last = save.lastRound;
+    if (!last || last.delta == null || last.delta > -3 || last.invited) return;
+    last.invited = true;
+    if (save.bloom === last.act) save.bloom = Object.keys(ACTS).filter((a) => a !== last.act).sort((a, b) => effectMean(b) - effectMean(a))[0];
+    persist();
+    this.render();
+    const card = ui.querySelector(`.card[data-a="${save.bloom}"]`);
+    if (card) card.classList.add("invite");
+    setTimeout(() => voice.say(INVITES[save.bloom], 6), 900);
+    link.mark(`lantern adapt invite ${save.bloom} after ${last.act} d=${last.delta.toFixed(1)}`);
   },
   render() {
     const sr = stageReady(save.stage), done = save.stage >= STAGES.length;
@@ -770,7 +997,7 @@ const Harbor = {
       const tr = save.traits[k], need = xpNeeded(tr.lvl), pct = Math.min(100, 100 * tr.xp / need);
       return `<button class="card${save.bloom === k ? " bloom" : ""}" data-a="${k}">
         ${save.bloom === k ? `<span class="badge">In bloom</span>` : ""}
-        <div class="name"><span>${a.icon}</span>${a.name}</div><div class="lvl">Level ${tr.lvl}</div>
+        <div class="name"><span>${a.icon}</span>${a.name}</div><div class="lvl">Level ${tr.lvl}${save.best && save.best[k] ? ` · best ${save.best[k]}` : ""}</div>
         <div class="bar"><i style="width:${pct}%"></i></div><div class="desc">${a.desc}</div></button>`;
     }).join("");
     const sail = done
@@ -801,369 +1028,6 @@ function startRound(act) {
   link.mark(`lantern round ${act} start`);
   go(S, { pre, startedAt: clock() });
 }
-
-// ---- Roots: guide a glowing seed along an endless vine
-
-const Roots = {
-  allowComfort: false, act: "roots",
-  enter(meta) {
-    this.meta = meta;
-    this.LEN = 10;              // vine length in screen heights
-    this.diff = save.effects.roots.slice(-2).reduce((a, b) => a + b, 0) / 2 < -4 ? 0.7 : 1;  // ramp hurt? flatten it
-    this.step = 0.02;           // path resolution (screen heights)
-    this.pts = [];              // [x, y] in screen-height units, y in 0..1
-    this.ph1 = rand(0, 6.28); this.ph2 = rand(0, 6.28);
-    while (this.pts.length * this.step < this.LEN + 2) this.extend();
-    this.s = 0;                 // seed position: index into pts (float)
-    this.off = 0; this.onTime = 0; this.activeTime = 0;
-    this.plants = []; this.nextPlant = 0.15; this.ended = null; this.started = false;
-    setUI(`${topBar(`<span class="pill">🌿 Roots</span><button class="btn" id="finish" style="min-height:44px;padding:0 18px">Finish</button>`)}<div class="spacer"></div>
-      <div class="prompt fade-in" id="rp"><h2>${input.usingSleeve() ? "Point at the seed" : "Touch the seed to begin"}</h2>
-      <p>Then guide it slowly along the glowing vine.</p>
-      ${input.usingSleeve() ? `<div class="row" style="margin-top:14px;pointer-events:auto"><button class="btn primary" id="rstart">Start</button></div>` : ""}</div>
-      <div class="spacer" style="flex:3"></div>`);
-    const rs = $("#rstart"); if (rs) rs.onclick = () => { this.wantStart = true; };
-    wireGear(); wireFinish(this);
-    this.stillFor = 0;
-  },
-  difficulty(x) { return clamp(x / this.LEN, 0, 1) * this.diff; },
-  extend() {
-    const i = this.pts.length, x = i * this.step, d = this.difficulty(x);
-    this.ph1 += this.step * (2.2 + 2.6 * d); this.ph2 += this.step * (4.1 + 3.4 * d);
-    const amp = 0.1 + 0.16 * d;
-    const y = 0.5 + amp * (0.65 * Math.sin(this.ph1) + 0.35 * Math.sin(this.ph2));
-    this.pts.push([x, clamp(x < 0.4 ? lerp(0.5, y, x / 0.4) : y, 0.18, 0.82)]);
-  },
-  tol() { const d = this.difficulty(this.s * this.step); return (0.13 - 0.05 * d) * (input.source === "sleeve" ? 1.25 : 1); },
-  cam() { return this.s * this.step - 0.5 * W / H; },  // seed at screen centre, where a recentred sleeve points
-  update(dt) {
-    if (this.ended) return;
-    const seedX = this.s * this.step, cam = this.cam();
-    const sp = this.pts[Math.floor(this.s)];
-    if (!this.started) {
-      const sx = (seedX - cam) * H, sy = sp[1] * H;
-      const begin = () => { this.started = true; const rp = $("#rp"); if (rp) rp.style.visibility = "hidden"; };
-      if (input.usingSleeve()) {
-        // Sleeve: wherever the finger rests now becomes "on the seed", which also clears slow drift.
-        this.stillFor = handSteady() ? this.stillFor + dt : 0;
-        if ((this.stillFor > 1.0 || this.wantStart) && !this.recentering) {
-          this.recentering = true;
-          waitAck("imu_recenter", (ack) => {
-            this.recentering = false;
-            if (!ack.ok) { this.stillFor = 0; this.wantStart = false; toast("Point a little more toward the screen.", 2.5); return; }
-            input.sleeve.x = sx; input.sleeve.y = sy;
-            begin();
-          });
-          link.send({ cmd: "imu_recenter" });
-        }
-      } else if (input.has && Math.hypot(input.x - sx, input.y - sy) < 0.12 * H) begin();
-      return;
-    }
-    if (!input.has) return;  // no input (put down, nurse visit): just pause, never penalise
-    this.activeTime += dt;
-    const cx = input.x / H + cam, cy = input.y / H;
-    const i0 = Math.max(0, Math.floor(this.s) - 5), i1 = Math.min(this.pts.length - 1, Math.floor(this.s) + 40);
-    let best = -1, bestD = Infinity;
-    for (let i = i0; i <= i1; i++) {
-      const d = Math.hypot(this.pts[i][0] - cx, this.pts[i][1] - cy);
-      if (d < bestD) { bestD = d; best = i; }
-    }
-    const tol = this.tol(), vmax = 0.085 * timeScale() / this.step;  // ~0.085 screen heights / s
-    if (bestD < tol) {
-      this.onTime += dt; this.off = Math.max(0, this.off - dt * 0.5);
-      if (best > this.s) this.s = Math.min(best, this.s + vmax * dt);
-    } else if (bestD > tol * 1.6) {
-      this.off += dt;
-    }
-    while (this.s * this.step > this.nextPlant && this.nextPlant < this.LEN) {
-      const p = this.pts[Math.round(this.nextPlant / this.step)];
-      this.plants.push({ x: p[0], y: p[1], side: Math.random() < 0.5 ? -1 : 1, h: rand(0.04, 0.08), r: seeded(Math.random() * 1e9), born: clock() });
-      this.nextPlant += rand(0.1, 0.16);
-    }
-    if (this.s * this.step >= this.LEN) this.finish("The vine reached the edge of the garden.");
-    else if (this.off > 5) this.finish("The vine rests here.");
-  },
-  hasProgress() { return this.started && this.s * this.step > 0.3; },
-  finishEarly() { this.finish("Nice tracing. Your garden grew."); },
-  finish(msg) {
-    this.ended = msg;
-    const p = clamp(this.s * this.step / this.LEN, 0, 1), on = this.activeTime ? this.onTime / this.activeTime : 0;
-    const score = Math.round(150 * p + 50 * on * p);
-    endRound("roots", score, this.meta, msg, `${Math.round(p * 100)}% of the vine`);
-  },
-  draw(time) {
-    const cam = this.cam();
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, "#0a1430"); g.addColorStop(1, "#0f2a2a");
-    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-    ctx.save(); ctx.globalAlpha = 0.5; drawSkyStarsOnly(time); ctx.restore();
-    const vis = (x) => (x - cam) * H;
-    const i0 = Math.max(0, Math.floor((cam - 0.1) / this.step)), i1 = Math.min(this.pts.length - 1, Math.ceil((cam + W / H + 0.1) / this.step));
-    const si = Math.floor(this.s);
-    const path = (a, b) => { ctx.beginPath(); for (let i = a; i <= b; i++) { const [x, y] = this.pts[i]; i === a ? ctx.moveTo(vis(x), y * H) : ctx.lineTo(vis(x), y * H); } };
-    // tolerance band ahead (soft), so the target is generous and visible
-    ctx.lineCap = "round"; ctx.lineJoin = "round";
-    path(Math.max(i0, si), i1); ctx.strokeStyle = "rgba(143,227,176,0.10)"; ctx.lineWidth = this.tol() * 2 * H; ctx.stroke();
-    path(Math.max(i0, si), i1); ctx.strokeStyle = "rgba(143,227,176,0.55)"; ctx.lineWidth = 3; ctx.setLineDash([2, 10]); ctx.stroke(); ctx.setLineDash([]);
-    // grown vine behind the seed
-    if (si > i0) { path(i0, si); ctx.strokeStyle = "#5fbf86"; ctx.lineWidth = 6; ctx.stroke(); }
-    for (const pl of this.plants) {
-      const x = vis(pl.x); if (x < -40 || x > W + 40) continue;
-      const k = Math.min(1, (clock() - pl.born) / 1.2);
-      drawPlant(x, pl.y * H, pl.h * H * k * 1.4, "common", time + pl.x * 3, null);
-    }
-    const sp = this.pts[si] || this.pts[0];
-    const sx = vis(this.s * this.step), sy = sp[1] * H;
-    ctx.save(); ctx.fillStyle = "#fff4c4"; ctx.shadowColor = flameColor(); ctx.shadowBlur = 26 + 6 * Math.sin(time * 3);
-    ctx.beginPath(); ctx.arc(sx, sy, 0.022 * H, 0, 6.29); ctx.fill(); ctx.restore();
-    if (input.has) drawCursor(input.x, input.y);
-    // progress: a thin line of light along the bottom
-    ctx.fillStyle = "rgba(255,255,255,.08)"; ctx.fillRect(W * 0.2, H - 10, W * 0.6, 3);
-    ctx.fillStyle = "#8fe3b0"; ctx.fillRect(W * 0.2, H - 10, W * 0.6 * clamp(this.s * this.step / this.LEN, 0, 1), 3);
-  },
-};
-function drawSkyStarsOnly(time) {
-  for (const s of STARS) {
-    ctx.globalAlpha = 0.25 + 0.3 * Math.sin(time * s.sp + s.ph); ctx.fillStyle = "#fff";
-    ctx.beginPath(); ctx.arc(s.x * W, s.y * H, s.r, 0, 6.29); ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-}
-
-// ---- Sight: 5-4-3-2-1. Find the hidden things in waves; decoys appear as you get better.
-
-const SIGHT_KINDS = [
-  { key: "firefly", n: 5, label: "fireflies", hint: "the little green lights", decoy: "an ember", zone: [0.08, 0.5] },
-  { key: "shell",   n: 4, label: "shells",    hint: "on the sand",            decoy: "a pebble", zone: [0.8, 0.93] },
-  { key: "star",    n: 3, label: "blue stars", hint: "brighter than the rest", decoy: "a pink star", zone: [0.05, 0.4] },
-  { key: "fish",    n: 2, label: "fish",       hint: "in the water",           decoy: "a leaf",   zone: [0.62, 0.78] },
-  { key: "moon",    n: 1, label: "moon on the water", hint: "a shimmer on the waves", decoy: "a lamp's glow", zone: [0.62, 0.76] },
-];
-const Sight = {
-  allowComfort: false, act: "sight", keepTouch: true,
-  enter(meta) {
-    this.meta = meta; this.wave = 0; this.found = 0; this.misses = 0; this.score = 0; this.ended = null;
-    this.diff = save.effects.sight.slice(-2).reduce((a, b) => a + b, 0) / 2 < -4 ? 0.7 : 1;
-    setUI(`${topBar(`<span class="pill">🔭 Sight</span><button class="btn" id="finish" style="min-height:44px;padding:0 18px">Finish</button>`)}<div class="prompt fade-in" style="margin-top:12px" id="sp"></div><div class="spacer"></div>`);
-    wireGear(); wireFinish(this);
-    this.newWave();
-  },
-  newWave() {
-    const w = this.wave, d = Math.min(1, w / 2) * this.diff;
-    this.items = [];
-    const place = (kind, decoy) => {
-      for (let tries = 0; tries < 40; tries++) {
-        const x = rand(0.06, 0.94), y = rand(kind.zone[0], kind.zone[1]);
-        if (this.items.every((o) => Math.hypot((o.x - x) * W, (o.y - y) * H) > 0.09 * Math.min(W, H))) {
-          this.items.push({ kind: kind.key, decoy, x, y, found: false, ph: rand(0, 6.28), alpha: lerp(0.95, 0.5, d), size: lerp(1.15, 0.8, d) });
-          return;
-        }
-      }
-    };
-    for (const k of SIGHT_KINDS) {
-      for (let i = 0; i < k.n; i++) place(k, false);
-      const decoys = w === 0 ? 0 : Math.round(k.n * (0.4 + 0.5 * d));
-      for (let i = 0; i < decoys; i++) place(k, true);
-    }
-    this.kind = 0; this.kindT = 0; this.dwell = null; this.streak = 0;
-    this.prompt();
-  },
-  current() { return SIGHT_KINDS[this.kind]; },
-  prompt() {
-    const k = this.current(), left = this.items.filter((o) => o.kind === k.key && !o.decoy && !o.found).length;
-    const sp = $("#sp");
-    if (sp) sp.innerHTML = `<h2>Find ${left} ${k.label}</h2><p>${k.hint}${this.wave === 0 && this.kind === 0 && this.found === 0
-      ? (input.usingSleeve() ? " · aim and tap your finger, or hold still on it" : " · tap them") : ""}</p>`;
-  },
-  hitR() { return (input.source === "sleeve" ? 0.075 : 0.055) * Math.min(W, H) * 1.6; },
-  pick(x, y, allowDecoy) {
-    const k = this.current();
-    let best = null, bd = this.hitR();
-    for (const o of this.items) {
-      if (o.found || o.kind !== k.key || (o.decoy && !allowDecoy)) continue;
-      const d = Math.hypot(o.x * W - x, o.y * H - y);
-      if (d < bd) { bd = d; best = o; }
-    }
-    return best;
-  },
-  select(o) {
-    if (o.decoy) {
-      o.found = true; o.fadeAt = clock(); this.misses++; this.streak = 0;
-      toast(`That one's ${this.current().decoy}.`, 2);
-      if (this.misses >= 3) this.finish("The mist rolls in softly.");
-      return;
-    }
-    o.found = true; o.foundAt = clock(); this.found++; this.streak++;
-    this.score += 1.5 + 0.4 * Math.min(this.streak, 5); this.kindT = 0;  // a streak is worth up to ~2x
-    const k = this.current();
-    if (!this.items.some((i) => i.kind === k.key && !i.decoy && !i.found)) {
-      this.kind++;
-      if (this.kind >= SIGHT_KINDS.length) {
-        this.score += 10; this.wave++;
-        if (this.wave >= 3) { this.finish("You found everything the night was hiding."); return; }
-        toast("The night shifts a little…", 2.5);
-        setTimeout(() => { if (!this.ended && scene === this) this.newWave(); }, 2200);
-        return;
-      }
-    }
-    this.prompt();
-  },
-  update(dt) {
-    if (this.ended || this.kind >= SIGHT_KINDS.length) return;
-    this.kindT += dt;
-    for (const tp of input.takeTaps()) {
-      const o = this.pick(tp.x, tp.y, tp.source !== "sleeve");
-      if (o) { this.select(o); if (this.ended) return; }
-    }
-    // dwell: holding the cursor on a real target for a moment selects it (never a decoy)
-    if (input.has && input.source === "sleeve") {
-      const o = this.pick(input.x, input.y, false);
-      if (o && this.dwell && this.dwell.o === o) { this.dwell.t += dt; if (this.dwell.t > 1.3) { this.dwell = null; this.select(o); } }
-      else this.dwell = o ? { o, t: 0 } : null;
-    } else this.dwell = null;
-  },
-  hasProgress() { return this.found > 0; },
-  finishEarly() { this.finish("Nice finding. The night is a little brighter."); },
-  finish(msg) {
-    this.ended = msg;
-    endRound("sight", Math.round(this.score), this.meta, msg, `${this.found} found`);
-  },
-  draw(time) {
-    drawSky(time, save.stage / STAGES.length, 0.62); drawSea(time, 0.62);
-    // a strip of sand
-    ctx.fillStyle = "#2c2a3e"; ctx.beginPath(); ctx.moveTo(0, H * 0.82);
-    for (let x = 0; x <= W; x += 20) ctx.lineTo(x, H * 0.8 + Math.sin(x * 0.01) * 8);
-    ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
-    const k = this.current(), hint = k && this.kindT > 12;
-    let hinted = false;
-    for (const o of this.items) {
-      let a = o.alpha;
-      if (o.found && o.decoy) a *= Math.max(0, 1 - (clock() - o.fadeAt) / 1.2);
-      if (o.found && !o.decoy) a = 0.9;
-      if (a <= 0.01) continue;
-      const isHint = hint && !hinted && k && o.kind === k.key && !o.decoy && !o.found;
-      if (isHint) hinted = true;
-      drawSightItem(o, time, a, isHint);
-    }
-    if (input.has) drawCursor(input.x, input.y, this.dwell ? this.dwell.t / 1.3 : 0);
-  },
-};
-function drawSightItem(o, time, a, hint) {
-  const x = o.x * W + (o.kind === "firefly" ? Math.sin(time * 0.7 + o.ph) * 10 : o.kind === "fish" ? Math.sin(time * 0.4 + o.ph) * 18 : 0);
-  const y = o.y * H + (o.kind === "firefly" ? Math.cos(time * 0.9 + o.ph) * 8 : 0);
-  const s = Math.min(W, H) * 0.012 * o.size;
-  ctx.save(); ctx.globalAlpha = a;
-  if (o.found && !o.decoy) { ctx.strokeStyle = "rgba(255,210,122,.7)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, s * 3, 0, 6.29); ctx.stroke(); }
-  if (hint) { ctx.strokeStyle = `rgba(255,255,255,${0.25 + 0.25 * Math.sin(time * 3)})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, s * 4, 0, 6.29); ctx.stroke(); }
-  switch (o.kind) {
-    case "firefly": {
-      const c = o.decoy ? "#ff9f5a" : "#d9ff8a";
-      ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 14;
-      ctx.globalAlpha = a * (0.7 + 0.3 * Math.sin(time * 3 + o.ph));
-      ctx.beginPath(); ctx.arc(x, y, s * 0.6, 0, 6.29); ctx.fill(); break;
-    }
-    case "shell": {
-      ctx.fillStyle = o.decoy ? "#6b6b7d" : "#f6c9d6";
-      if (o.decoy) { ctx.beginPath(); ctx.ellipse(x, y, s * 1.4, s, 0.3, 0, 6.29); ctx.fill(); break; }
-      ctx.beginPath(); ctx.moveTo(x, y + s);
-      for (let i = 0; i <= 6; i++) { const ang = Math.PI + i * Math.PI / 6; ctx.lineTo(x + Math.cos(ang) * s * 1.6, y + Math.sin(ang) * s * 1.6); }
-      ctx.closePath(); ctx.fill(); break;
-    }
-    case "star": {
-      const c = o.decoy ? "#ffb0d0" : "#a8d4ff";
-      ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 10;
-      ctx.beginPath();
-      for (let i = 0; i < 8; i++) { const r = i % 2 ? s * 0.35 : s * 1.3, ang = i * Math.PI / 4 + time * 0.1; ctx.lineTo(x + Math.cos(ang) * r, y + Math.sin(ang) * r); }
-      ctx.closePath(); ctx.fill(); break;
-    }
-    case "fish": {
-      ctx.fillStyle = o.decoy ? "#7fae6b" : "#ffb37a";
-      if (o.decoy) { ctx.beginPath(); ctx.ellipse(x, y, s * 1.5, s * 0.5, 0.5, 0, 6.29); ctx.fill(); break; }
-      ctx.beginPath(); ctx.ellipse(x, y, s * 1.6, s * 0.7, 0, 0, 6.29); ctx.fill();
-      ctx.beginPath(); ctx.moveTo(x - s * 1.4, y); ctx.lineTo(x - s * 2.4, y - s * 0.8); ctx.lineTo(x - s * 2.4, y + s * 0.8); ctx.fill(); break;
-    }
-    case "moon": {
-      ctx.fillStyle = o.decoy ? "rgba(255,190,120,.7)" : "rgba(235,240,255,.85)";
-      for (let i = 0; i < 4; i++) {
-        ctx.globalAlpha = a * (0.5 + 0.3 * Math.sin(time * 2 + i + o.ph));
-        ctx.beginPath(); ctx.ellipse(x + Math.sin(time + i) * 3, y + i * s * 0.7, s * (2.2 - i * 0.4), s * 0.25, 0, 0, 6.29); ctx.fill();
-      }
-      break;
-    }
-  }
-  ctx.restore();
-}
-
-// ---- Glow: one big quick breath in (the skin sensor can see it), then a long, slow breath out
-
-const Glow = {
-  allowComfort: false, act: "glow",
-  enter(meta) {
-    this.meta = meta; this.n = 0; this.total = 5; this.confirmed = 0; this.score = 0; this.ended = null;
-    this.phase = "intro"; this.pt = 0; this.flare = 0; this.got = false; this.cueAt = null;
-    this.canConfirm = sensorReady() && !!link.state.contact;
-    setUI(`${topBar(`<span class="pill">✨ Glow</span><button class="btn" id="finish" style="min-height:44px;padding:0 18px">Finish</button>`)}<div class="spacer"></div>
-      <div class="prompt fade-in" id="gp"></div><div class="spacer" style="flex:.35"></div>`);
-    wireGear();
-    this.off = (m) => {
-      if (m.type === "scr" && m.cued && this.cueAt != null && !this.got) { this.got = true; this.flare = 1; }
-    };
-    link.on(this.off);
-    wireFinish(this);
-    this.say("One big breath", "When the lantern asks, take one big, quick breath in.");
-  },
-  exit() { const i = link.handlers.indexOf(this.off); if (i >= 0) link.handlers.splice(i, 1); },
-  say(h, p) { const el = $("#gp"); if (el) el.innerHTML = `<h2>${h}</h2><p>${p}</p>`; },
-  update(dt) {
-    if (this.ended) return;
-    this.pt += dt * timeScale();
-    this.flare = Math.max(0, this.flare - dt * 0.25);
-    const P = this.phase;
-    if (P === "intro" && this.pt > 5) this.to("ready", "Get ready…", `Breath ${this.n + 1} of ${this.total}`);
-    else if (P === "ready" && this.pt > 3) {
-      this.canConfirm = sensorReady() && link.state.contact;
-      this.got = false; this.cueAt = clock();
-      link.send({ cmd: "expect_response", seconds: 11 });
-      this.to("in", "Breathe in, big and quick!", this.canConfirm ? "" : "(The skin sensor isn't reading right now, so the lantern can't see it.)");
-    } else if (P === "in" && this.pt > 1.6) this.to("out", "…and let it all out, slowly", "Long and gentle, like fogging up a window.");
-    else if (P === "out" && (this.pt > 7.5 && (this.got || !this.canConfirm || clock() - this.cueAt > 12))) {
-      this.n++; this.cueAt = null;
-      // Without a working sensor every breath counts in full; with one, a breath it saw counts double.
-      if (this.got || !this.canConfirm) { if (this.got) this.confirmed++; this.score += 24; } else this.score += 12;
-      if (!this.canConfirm) this.flare = 0.8;
-      this.to("feedback", this.got ? "The lantern heard you" : "The lantern felt that", this.got ? "Look how bright it is." : "Lovely and slow.");
-    } else if (P === "feedback" && this.pt > 3) {
-      if (this.n >= this.total) { this.finish(); return; }
-      this.to("rest", "Breathe normally", "Just watch the embers for a moment.");
-    } else if (P === "rest" && this.pt > 8) this.to("ready", "Get ready…", `Breath ${this.n + 1} of ${this.total}`);
-  },
-  to(phase, h, p) { this.phase = phase; this.pt = 0; this.say(h, p); },
-  hasProgress() { return this.n > 0; },
-  finishEarly() { this.finish(); },
-  finish() {
-    this.ended = true;
-    endRound("glow", this.score, this.meta, "The lantern is glowing warmly.",
-      this.canConfirm ? `${this.confirmed} of ${this.n} breaths seen` : `${this.n} breaths`);
-  },
-  draw(time) {
-    drawSky(time); drawSea(time);
-    const P = this.phase, k = clamp(this.pt / 1.6, 0, 1);
-    let glow = 0.7;
-    if (P === "in") glow = 0.7 + 0.5 * k;
-    else if (P === "out") glow = 1.2 - 0.5 * clamp(this.pt / 7, 0, 1);
-    glow += this.flare * 0.9;
-    const size = Math.min(W, H) * 0.11 * (P === "in" ? 1 + 0.12 * k : 1);
-    drawLantern(W / 2, H * 0.44, size, glow, time);
-    if (P === "rest" || P === "feedback") {
-      for (let i = 0; i < 12; i++) {
-        const a = (time * 0.15 + i / 12) % 1;
-        ctx.globalAlpha = (1 - a) * 0.6; ctx.fillStyle = flameColor();
-        ctx.beginPath(); ctx.arc(W / 2 + Math.sin(i * 7 + time * 0.5) * 60 * a, H * 0.4 - a * H * 0.3, 2.5, 0, 6.29); ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-    }
-  },
-};
 
 // ---- Rest: the quiet scene after every round. This is where stress is read, never shown.
 
@@ -1197,6 +1061,7 @@ const Rest = {
       save.effects[r.act].push(Math.round(delta * 10) / 10);
       save.effects[r.act] = save.effects[r.act].slice(-12);
     }
+    save.lastRound = { act: r.act, delta, invited: false };
     link.mark(`lantern rest ${r.act} pre=${fmt(r.meta.pre)} post=${fmt(post)} score=${r.score}`);
     go(Results, { ...r, delta });
   },
@@ -1223,13 +1088,19 @@ function rollDrop(act, quality, bloom) {
   const pool = DROPS[act][rarity], name = pool[Math.floor(Math.random() * pool.length)];
   return { act, name, rarity, isNew: !save.collection.some((c) => c.name === name) };
 }
+// "Par" for a round: what a good player scores. Scores are open-ended (experts go far past par);
+// XP above par counts at half rate, so skill pays off without skipping the grind.
 const MAX_SCORE = { roots: 200, sight: 190, glow: 120 };
+const xpFromScore = (act, score) => (score <= MAX_SCORE[act] ? score : MAX_SCORE[act] + (score - MAX_SCORE[act]) * 0.5);
 const Results = {
   allowComfort: true,
   enter(r) {
     const bloom = save.bloom === r.act, quality = clamp(r.score / MAX_SCORE[r.act], 0, 1);
-    const xp = Math.round(r.score * CFG.pace * (bloom ? CFG.bloomMult : 1));
+    const xp = Math.round(xpFromScore(r.act, r.score) * CFG.pace * (bloom ? CFG.bloomMult : 1));
     const tr = save.traits[r.act], before = tr.lvl;
+    save.best = save.best || { roots: 0, sight: 0, glow: 0 };
+    const prevBest = save.best[r.act] || 0, newBest = prevBest > 0 && r.score > prevBest;
+    if (r.score > prevBest) save.best[r.act] = r.score;
     tr.xp += xp; save.light += xp; save.rounds++;
     while (tr.xp >= xpNeeded(tr.lvl)) { tr.xp -= xpNeeded(tr.lvl); tr.lvl++; }
     const drop = rollDrop(r.act, quality, bloom);
@@ -1244,13 +1115,15 @@ const Results = {
     setUI(`${topBar()}<div class="spacer"></div>
       <div class="panel fade-in"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
         <h2 style="margin:0">${a.icon} ${a.name}${tr.lvl > before ? ` · Level ${tr.lvl}!` : ""}</h2><span class="pill">+${xp} light${bloom ? " · bloom" : ""}</span></div>
-        <p style="color:var(--ink-soft);margin:6px 0 12px">${r.detail}</p>
+        <p style="color:var(--ink-soft);margin:6px 0 4px">${r.detail}</p>
+        <p style="margin:0 0 12px;font-size:15px">Score <b style="color:var(--accent)">${r.score}</b>${newBest ? ` · <b style="color:var(--accent)">New best!</b> (was ${prevBest})` : ` · best ${Math.max(prevBest, r.score)}`}</p>
         <div class="bar"><i style="width:${pct}%"></i></div>
         <p style="color:var(--ink-faint);font-size:15px;margin:6px 0 0">Level ${tr.lvl} · ${tr.xp} / ${xpNeeded(tr.lvl)}</p>
         ${dropHtml}
         <div class="row" style="margin-top:16px"><button class="btn primary" id="again">Play ${a.name} again</button><button class="btn" id="home">Back to the boat</button></div>
       </div><div class="spacer"></div>`);
     wireGear();
+    if (newBest) { sfx.sparkle(); fx.burst(W / 2, H * 0.4, { color: "#ffd27a", n: 40, speed: 160 }); }
     $("#again").onclick = () => startRound(r.act);
     $("#home").onclick = () => go(Harbor);
   },
@@ -1345,6 +1218,7 @@ const Settings = {
       <label>Controls <select id="mode"><option value="auto">Sleeve, or touch</option><option value="sleeve">Finger sleeve only</option><option value="touch">Touch / mouse only</option></select></label>
       <label>Sleeve sensitivity <select id="sens"><option value="35">Gentle (big movements)</option><option value="25" selected>Medium</option><option value="15">Quick (small movements)</option></select></label>
       <label>Sensor <span style="color:var(--ink-soft)">${sensor}${link.imuPresent ? " · sleeve connected" : ""}</span></label>
+      <label>Sound <input type="checkbox" id="sound" ${sfx.enabled ? "checked" : ""} style="width:24px;height:24px"></label>
       <label>Sensor readout (dev) <input type="checkbox" id="devmode" ${dev.on ? "checked" : ""} style="width:24px;height:24px"></label>
       <div class="row" style="margin-top:16px">
         <button class="btn" id="setup" ${link.imuPresent ? "" : "disabled"}>Set up the sleeve again</button>
@@ -1353,6 +1227,7 @@ const Settings = {
     $("#mode").value = input.mode;
     $("#mode").onchange = (e) => input.setMode(e.target.value);
     $("#devmode").onchange = (e) => dev.toggle(e.target.checked);
+    $("#sound").onchange = (e) => { sfx.start(); sfx.setEnabled(e.target.checked); };
     $("#sens").onchange = (e) => link.send({ cmd: "imu_range", x_deg: +e.target.value, y_deg: Math.round(+e.target.value * 0.6) });
     $("#setup").onclick = () => go(Setup);
     $("#reset").onclick = () => {
@@ -1381,13 +1256,14 @@ const Settings = {
 let last = clock(), animT = 0;
 function frame() {
   const now = clock(), dt = Math.min(0.1, now - last); last = now;
-  updateMood(dt);
+  updateMood(dt); updateWorld(dt); assist.update(dt); fx.update(dt);
   animT += dt * timeScale();  // animations slow down smoothly when the game turns gentle
   input.update();
   if (scene) { scene.t += dt; scene.update(dt); }
   input.taps = [];  // taps belong to the frame they happened in
   ctx.clearRect(0, 0, W, H);
   if (scene) scene.draw(animT, dt);
+  fx.draw();
   // a soft vignette deepens when the game turns gentle
   const v = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
   v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, `rgba(4,6,18,${0.35 + 0.2 * mood.gentle})`);
@@ -1395,6 +1271,12 @@ function frame() {
   dev.draw(now);
   requestAnimationFrame(frame);
 }
+</script>
+<script src="lantern/roots.js"></script>
+<script src="lantern/sight.js"></script>
+<script src="lantern/glow.js"></script>
+<script>
+"use strict";
 connect();
 go(Welcome);
 requestAnimationFrame(frame);

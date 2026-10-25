@@ -177,6 +177,19 @@ moving), the stress index with its thresholds (faded while the game ignores it),
 behind the game's decisions: phase, signal, SCR rate, sleeve pointer and motion, and each round's
 pre/post stress. It is off by default, so patients never see it.
 
+**How stress shows up in the game** (no numbers for the patient, but visible cause and effect):
+the sky reacts live (calm brings out an aurora, brighter stars and a glowing sea; rising stress
+slows everything and brings the lantern closer). When stress stays above 45 during a round for
+4 s, a "helping hand" turns on until it is back under 32 for 10 s: Roots widens the vine and
+guides the seed, Sight sends a guide firefly and hides decoys, Glow slows down with a breathing
+circle. A gold "Your lantern is helping" badge shows while it's on. After a round that raised
+stress, the lantern invites the patient to a different activity. Every adaptation is logged in
+the nurse view and marked on its chart. In dev mode, the **A** key toggles the helping hand to
+demo it without a stressed wearer; `serve --sim` also cycles through a stressful stretch.
+
+The activities live in `stresskit/web/lantern/{roots,sight,glow}.js`; `game.html` holds the
+shared core (scenes, sensor link, input, the reactive world, voice, sound and effects).
+
 ### REST (for engines that prefer polling)
 
 `GET /api/state` returns the latest state. `POST /api/command` takes a command body like
