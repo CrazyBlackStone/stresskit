@@ -215,10 +215,26 @@ def test_only_a_response_that_starts_after_the_cue_is_the_breath():
     eng.t = 100.0
     eng.expect_response(10.0)
     eng._on_scr(SCR(t_onset=97.0, t_peak=102.5, amplitude_us=0.2, onset_us=1.0))  # already rising at the cue
-    eng._on_scr(SCR(t_onset=99.9, t_peak=101.6, amplitude_us=0.2, onset_us=1.0))  # peaks too soon to be the breath
+    eng._on_scr(SCR(t_onset=99.9, t_peak=100.8, amplitude_us=0.2, onset_us=1.0))  # peaks too soon to be the breath
     assert eng.n_cued == 0 and eng._cue is not None
     eng._on_scr(SCR(t_onset=101.5, t_peak=103.5, amplitude_us=0.2, onset_us=1.0))
     assert eng.n_cued == 1 and eng._cue is None
+
+
+def _onset_slope_after_baseline(stress: float) -> float:
+    sim = EDASimulator(seed=3, loop=False, scenario=[Segment(8, 0, False, "off"), Segment(200, stress, True, "rest")])
+    eng = StressEngine()
+    while sim.t < sim.total_seconds and eng.phase != READY:
+        t, c, sd = sim.step()
+        eng.process(t, c / sim.full_scale, sd / sim.full_scale)
+    assert eng.phase == READY
+    return eng._scr.onset_slope
+
+
+def test_a_busy_baseline_cannot_raise_the_onset_slope_out_of_reach():
+    cap = EngineConfig().scr_onset_slope_max
+    assert _onset_slope_after_baseline(0.05) < cap  # a calm rest still adapts to its own noise
+    assert _onset_slope_after_baseline(0.5) == pytest.approx(cap)  # many responses while calibrating
 
 def test_scrs_during_hand_motion_are_not_stress():
     eng, peak = _breathing_session("motion")

@@ -164,10 +164,10 @@ never sees a stress number.
 * **Glow**: one big, quick breath in, then a slow breath out. The game sends
   `{"cmd":"expect_response"}` first; the SCR that follows is tagged `cued` and doesn't count as
   stress. SCRs that start while the sensor hand moves are tagged `motion` and don't count either.
-  The game waits for that response: a cued SCR has to start after the cue (1.5 s slack) and peak
-  2–11 s after it. If none comes, the lantern gently asks for the breath again instead of moving
-  on. With no sensor reading, the patient taps "I took my breath"; after two unanswered tries a
-  quiet "Skip this breath" appears.
+  The game waits for that response: a cued SCR has to start after the cue (2 s slack, since people
+  often breathe in during the countdown) and peak 1–14 s after it. If none comes, the lantern
+  gently asks for the breath again instead of moving on. With no sensor reading, the patient taps
+  "I took my breath"; after two unanswered tries a quiet "Skip this breath" appears.
 
 Stress is read in the quiet scene after each round (only while the hand is still) and compared
 with the minute before it. The activity that helps most gets a "bloom" bonus. Progress is

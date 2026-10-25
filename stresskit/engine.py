@@ -68,6 +68,9 @@ class EngineConfig:
     scr_min_amp_us: float = 0.02
     scr_rel_amp: float = 0.004
     scr_onset_slope: float = 0.008
+    # The onset slope adapts to the resting signal's step noise, but a baseline full of real responses
+    # (talking, an anxious wait) inflates that noise estimate; capped so moderate SCRs still register.
+    scr_onset_slope_max: float = 0.03
 
     # stress index (population defaults; a stress reference replaces tonic_full/rate_full)
     tonic_dead: float = 0.03
@@ -97,11 +100,12 @@ class EngineConfig:
     # Excluded SCRs: a big inhale the game asked for (expect_response) and SCRs that start while the
     # sensor hand moves (note_motion) are reported but don't count toward the stress index.
     # Matched on the SCR's peak: onset comes 1-3 s after a big breath and the rise takes 1-3 s more.
-    # (The detected onset can sit early when the previous response is still decaying, so it only has to
-    # come after the cue minus a slack: a response already well underway at the cue wasn't the breath.)
-    cue_delay_s: float = 2.0
+    # Many people breathe in while the game counts down, so the peak may come as soon as 1 s after the
+    # cue. (The detected onset can also sit early when the previous response is still decaying, so it
+    # only has to come after the cue minus a slack: a response well underway at the cue wasn't the breath.)
+    cue_delay_s: float = 1.0
     cue_window_s: float = 8.0
-    cue_onset_slack_s: float = 1.5
+    cue_onset_slack_s: float = 2.0
     motion_margin_s: float = 1.0  # motion this close before an SCR's onset (or during its rise) taints it
 
 
@@ -562,7 +566,7 @@ class StressEngine:
             self._scr.noise_us = max(0.0005, raw_sigma)
             self._scr.min_amp_us = max(cfg.scr_min_amp_us, 5.0 * raw_sigma)
         if not math.isnan(step_sigma):
-            self._scr.onset_slope = max(cfg.scr_onset_slope, 3.0 * step_sigma * cfg.fs)
+            self._scr.onset_slope = min(cfg.scr_onset_slope_max, max(cfg.scr_onset_slope, 3.0 * step_sigma * cfg.fs))
         self._rate.reset(rate=self.base_rate)
         self._ready_at = t
         self.phase = READY

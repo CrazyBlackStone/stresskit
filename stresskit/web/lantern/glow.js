@@ -60,7 +60,7 @@ const GLOW_REVEALS = [
 const GLOW_VOICE = { 0: "You lit the lighthouse!", 2: "Look at everything you've found.", 4: "The whole sea is glowing now." };
 
 // ---- waiting for the breath: the skin's answer to a cued breath may peak up to GLOW_CUE_S later
-const GLOW_CUE_S = 11;
+const GLOW_CUE_S = 14;  // late responders often peak 10-13 s after the breath
 const GLOW_BREATH_PHASES = ["ready", "in", "out", "listen", "again"];
 const GLOW_RETRY = [  // [heading, prompt, spoken]
   ["Let's try that once more", "Whenever you're ready: one big, quick breath in through your nose, like smelling a flower.",
@@ -452,7 +452,7 @@ const Glow = {
         else if (this.canConfirm) this.to("listen", "Breathe normally", "The lighthouse is listening for your breath…");
         else this.to("listen", "Did you take your breath?", "Tap below once you have. The skin sensor isn't reading right now.");
       }
-    } else if (P === "listen") {  // the skin answers 2-8 s after a big breath; until then, wait
+    } else if (P === "listen") {  // the skin answers 1-13 s after a big breath; until then, wait
       if (this.got) this.scoreBreath();
       else if (this.canConfirm && clock() - this.cueAt > GLOW_CUE_S + 0.5) this.retry();
     } else if (P === "again" && this.pt > 4.5) this.toReady();
