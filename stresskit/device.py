@@ -133,7 +133,10 @@ class SerialReader(threading.Thread):
                     ser.write(b"i")  # ask for the header (scales, IMU presence)
                     self._read_loop(ser)
             except (serial.SerialException, OSError) as exc:
-                self.on_status(f"disconnected ({exc.__class__.__name__}); retrying")
+                if getattr(exc, "errno", None) == 13:
+                    self.on_status(f"permission denied on {port} (Linux: add yourself to the dialout group); retrying")
+                else:
+                    self.on_status(f"disconnected ({exc.__class__.__name__}); retrying")
             self.connected_port = None
             time.sleep(1.0)
 

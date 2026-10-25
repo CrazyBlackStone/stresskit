@@ -427,7 +427,8 @@ async def serve(
     hub = Hub(engine, recorder, source, imu_recorder)
 
     app = build_app(hub)
-    runner = web.AppRunner(app, access_log=None)
+    # Browsers send every localhost cookie (other dev apps' auth tokens) and can overflow 8 KiB headers.
+    runner = web.AppRunner(app, access_log=None, max_field_size=65536)
     await runner.setup()
     await web.TCPSite(runner, host, http_port).start()
     url = f"http://{'localhost' if host in ('0.0.0.0', '127.0.0.1') else host}:{http_port}"
