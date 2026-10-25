@@ -4,9 +4,11 @@
 
    The skin sensor can't see slow breathing; it can only see one big quick inhale, as a skin response that
    peaks 2-8 s later. So each breath is: a big quick breath in (cued, so the server tags the response), then
-   a long slow breath out that is only guided visually. Nothing moves on the sea while you breathe. A breath the
-   sensor saw charges the lighthouse fully (an unseen one partly, never zero), its beam reveals something new, and
-   then the player aims the beam: hold the light on boats, ducklings, fireflies, a whale, shooting stars or a rare
+   a long slow breath out that is only guided visually. Nothing moves on the sea while you breathe, and the game
+   waits until the skin answers: no response in the cue window means a gentle "once more" and a new cue, never
+   moving on by itself. With no sensor reading the player taps "I took my breath"; after two unanswered tries a
+   quiet "Skip this breath" appears. A breath the sensor saw (or a tapped one, with no sensor) charges the
+   lighthouse fully, a skipped one partly; its beam reveals something new, and then the player aims the beam: hold the light on boats, ducklings, fireflies, a whale, shooting stars or a rare
    golden fish until a ring fills to guide it home. Quick catches build a chain (up to x6); light resting on empty
    water lets it cool. Each breath makes the sea busier; challengeFactor() and the helping hand slow it all down. */
 
@@ -56,6 +58,18 @@ const GLOW_REVEALS = [
     rest: "" },
 ];
 const GLOW_VOICE = { 0: "You lit the lighthouse!", 2: "Look at everything you've found.", 4: "The whole sea is glowing now." };
+
+// ---- waiting for the breath: the skin's answer to a cued breath may peak up to GLOW_CUE_S later
+const GLOW_CUE_S = 11;
+const GLOW_BREATH_PHASES = ["ready", "in", "out", "listen", "again"];
+const GLOW_RETRY = [  // [heading, prompt, spoken]
+  ["Let's try that once more", "Whenever you're ready: one big, quick breath in through your nose, like smelling a flower.",
+    "Let's try once more. Nice and big."],
+  ["Take your time", "Let your shoulders drop, then fill your lungs all the way up. The lighthouse is listening.",
+    "Take your time. Fill your lungs all the way."],
+  ["One more, nice and deep", "Some breaths are too quiet to feel. A bigger one helps, or skip this one. That's okay too.",
+    "A big, deep one. You're doing fine."],
+];
 
 const glowRnd = seeded(7331);
 const GLOW_STARS = Array.from({ length: 110 }, () => ({ x: glowRnd(), y: glowRnd() * 0.55, r: 0.5 + glowRnd(), ph: glowRnd() * 6.28, sp: 0.3 + glowRnd() * 0.8 }));
@@ -378,9 +392,9 @@ const Glow = {
   assistLine: "Let's slow down together. Just breathe with the light.",
   enter(meta) {
     this.meta = meta; this.n = 0; this.total = 6; this.confirmed = 0; this.confirmable = 0; this.score = 0; this.ended = null;
-    this.phase = "intro"; this.pt = 0; this.flare = 0; this.got = false; this.cueAt = null;
+    this.phase = "intro"; this.pt = 0; this.flare = 0; this.got = false; this.cueAt = null; this.tries = 0; this.tapped = false;
     this.canConfirm = sensorReady() && !!link.state.contact;
-    this.exDur = 6; this.half = false; this.waitSaid = false; this.restMode = null;
+    this.exDur = 6; this.half = false; this.restMode = null;
     this.rev = [0, 0, 0, 0, 0]; this.revTarget = [0, 0, 0, 0, 0]; this.revOn = [false, false, false, false, false];
     this.revealIdx = null; this.revealDur = 0; this.beamX = W * 0.3; this.beamY = H * 0.7; this.beamI = 0; this.beamFrom = null;
     this.ignite = 0; this.ringA = 0; this.mist = []; this.mistAcc = 0;
@@ -391,16 +405,26 @@ const Glow = {
     this.best0 = (save.best && save.best.glow) || 0;
     setUI(`${topBar(`<span class="pill">✨ Glow <b id="gsc">0</b></span><span class="pill" id="gch">chain ×1</span>` +
       `<span class="pill" id="gbe">best ${this.best0}</span><button class="btn" id="finish" style="min-height:44px;padding:0 18px">Finish</button>`)}<div class="spacer"></div>
-      <div class="prompt fade-in" id="gp"></div><div class="spacer" style="flex:.35"></div>`);
+      <div class="prompt fade-in" id="gp"></div><div class="row" id="gbtn"></div><div class="spacer" style="flex:.35"></div>`);
     wireGear();
     this.off = (m) => {
-      if (m.type === "scr" && m.cued && this.cueAt != null && !this.got) { this.got = true; this.flare = 1; }
+      if (m.type === "scr" && m.cued && this.cueAt != null && !this.got) { this.got = true; this.flare = 1; sfx.chime(4, 0.07); }
     };
     link.on(this.off);
     wireFinish(this);
     this.say("Light the lighthouse", "When the lantern asks, take one big, quick breath in. It charges the lighthouse, then you aim its beam to guide things home.");
   },
   exit() { const i = link.handlers.indexOf(this.off); if (i >= 0) link.handlers.splice(i, 1); this.cueAt = null; },
+  // A quiet way through when the skin can't confirm the breath: "I took my breath" with no sensor reading,
+  // "Skip this breath" after a few gentle tries. Nothing moves on by itself.
+  button(kind) {
+    const el = $("#gbtn");
+    if (!el || el.dataset.kind === (kind || "")) return;
+    el.dataset.kind = kind || "";
+    el.innerHTML = kind === "tap" ? `<button class="btn primary" id="gb">I took my breath</button>`
+      : kind === "skip" ? `<button class="btn" id="gb" style="min-height:44px;opacity:.8">Skip this breath</button>` : "";
+    if (kind) $("#gb").onclick = () => { if (!this.ended && GLOW_BREATH_PHASES.includes(this.phase) && !this.got) { this.tapped = kind; this.scoreBreath(); } };
+  },
   say(h, p) { const el = $("#gp"); if (el) el.innerHTML = h ? `<h2>${h}</h2><p>${p}</p>` : ""; },
   to(phase, h, p) { this.phase = phase; this.pt = 0; if (h) this.say(h, p); },
   speak(text, force) {  // the voice bubble, without lines tripping over each other
@@ -417,22 +441,22 @@ const Glow = {
     this.pt += dt * timeScale();
     const P = this.phase, lv = assist.level;
     if (P === "intro" && this.pt > 6) this.toReady();
-    else if (P === "ready" && this.pt > 3) {
-      this.canConfirm = sensorReady() && !!link.state.contact;
-      this.got = false; this.cueAt = clock();
-      link.send({ cmd: "expect_response", seconds: 11 });
-      sfx.swell(1.6);
-      this.to("in", "Breathe in, big and quick!", this.canConfirm ? "Fill the lantern with light."
-        : "(The skin sensor isn't reading right now. Every breath still lights the way.)");
-    } else if (P === "in" && this.pt > 1.6) {
-      this.exDur = 6 + 2 * lv; this.half = false; this.waitSaid = false;
+    else if (P === "ready" && this.pt > (this.tries ? 2 : 3)) this.startBreath();
+    else if (P === "in" && this.pt > 1.6) {
+      this.exDur = 6 + 2 * lv; this.half = false;
       this.to("out", "…and let it all out, slowly", lv > 0.3 ? "Slower still. Let the mist drift out over the water." : "Long and gentle, like fogging up a window.");
     } else if (P === "out") {
       if (!this.half && this.pt > this.exDur * 0.5) { this.half = true; this.say("Keep going…", "All the way out. Your breath carries the light to the lighthouse."); }
-      const ready = this.got || !this.canConfirm || clock() - this.cueAt > 12;
-      if (this.pt > this.exDur + 1 && ready) this.scoreBreath();
-      else if (!this.waitSaid && this.pt > this.exDur + 1) { this.waitSaid = true; this.say("Breathe normally", "The lighthouse is catching your breath…"); }
-    } else if (P === "reveal") {
+      if (this.pt > this.exDur + 1) {
+        if (this.got) this.scoreBreath();
+        else if (this.canConfirm) this.to("listen", "Breathe normally", "The lighthouse is listening for your breath…");
+        else this.to("listen", "Did you take your breath?", "Tap below once you have. The skin sensor isn't reading right now.");
+      }
+    } else if (P === "listen") {  // the skin answers 2-8 s after a big breath; until then, wait
+      if (this.got) this.scoreBreath();
+      else if (this.canConfirm && clock() - this.cueAt > GLOW_CUE_S + 0.5) this.retry();
+    } else if (P === "again" && this.pt > 4.5) this.toReady();
+    else if (P === "reveal") {
       if (this.revealIdx != null && !this.revOn[this.revealIdx] && this.pt > 2) this.revOn[this.revealIdx] = true;
       if (this.pt > this.revealDur) this.toBeam();
     } else if (P === "beam") this.beamStep(dt);
@@ -440,11 +464,31 @@ const Glow = {
       if (this.pt > 3 + 6 * lv) this.toReady();  // stress lengthens the rest between breaths
       else this.restText();
     }
-    if (!this.ended) this.pills();
+    if (!this.ended) {
+      this.pills();
+      const P2 = this.phase;
+      this.button(!GLOW_BREATH_PHASES.includes(P2) ? null : P2 === "listen" && !this.canConfirm ? "tap" : this.tries >= 2 ? "skip" : null);
+    }
   },
   toReady() {
     this.to("ready", "Get ready…", `Breath ${this.n + 1} of ${this.total}. ` +
-      (this.n === 0 ? "The lighthouse is still dark. Let's wake it up." : "Charge the light again."));
+      (this.tries ? "Here comes the light again." : this.n === 0 ? "The lighthouse is still dark. Let's wake it up." : "Charge the light again."));
+  },
+  startBreath() {
+    this.canConfirm = sensorReady() && !!link.state.contact;
+    this.got = false; this.cueAt = clock();
+    link.send({ cmd: "expect_response", seconds: GLOW_CUE_S });
+    sfx.swell(1.6);
+    this.to("in", this.tries ? "Big breath in!" : "Breathe in, big and quick!", this.canConfirm ? "Fill the lantern with light."
+      : "(The skin sensor isn't reading right now. Tap below after your breath.)");
+  },
+  retry() {  // the skin didn't answer: ask again, gently, never moving on without the breath
+    this.tries++; this.cueAt = null;
+    const L = GLOW_RETRY[Math.min(this.tries, GLOW_RETRY.length) - 1];
+    const still = link.state && link.state.signal !== "ok" ? " Rest the hand with the finger straps and keep it still." : "";
+    this.to("again", L[0], L[1] + still);
+    this.speak(L[2], true);
+    link.mark(`lantern glow breath ${this.n + 1} not seen try ${this.tries}`);
   },
   restText() {
     const mode = assist.on ? "assist" : "plain";
@@ -454,8 +498,9 @@ const Glow = {
     else this.say("The light is resting", ((GLOW_REVEALS[this.n - 1] || {}).rest || "Just watch the light on the water.") + ` ${this.caught} guided home so far.`);
   },
   scoreBreath() {
-    const i = this.n, g = glowGeo();
-    this.n++; this.cueAt = null;
+    const i = this.n, g = glowGeo(), skipped = this.tapped === "skip";
+    link.mark(`lantern glow breath ${i + 1} ${this.got ? "seen" : this.tapped || "unseen"} tries=${this.tries + 1}`);
+    this.n++; this.cueAt = null; this.tries = 0; this.tapped = false; this.button(null);
     if (this.canConfirm) this.confirmable++;
     // A breath the sensor saw (or any breath, with no working sensor) charges the beam fully; others partly.
     const full = this.got || !this.canConfirm;
@@ -469,7 +514,7 @@ const Glow = {
     this.beamFrom = [this.beamX, this.beamY]; this.ignite = full ? 1 : 0.5;
     if (full) { sfx.sparkle(); fx.burst(g.lhX, g.lampY, { color: "#fff1c8", n: 28, speed: 80, life: 1.8, size: 2.2 }); }
     else { sfx.chime(i + 3, 0.08); fx.sparkle(g.lhX, g.lampY); }
-    const head = this.got ? "The lighthouse heard you" : full ? "The lighthouse is lit" : "The lighthouse felt that";
+    const head = this.got ? "The lighthouse heard you" : full ? "The lighthouse is lit" : skipped ? "That's okay" : "The lighthouse felt that";
     this.to("reveal", head, (R ? (full ? R.got : R.soft) + " " : "") + (full ? "A full charge of light." : "Some light to use. A big quick breath fills it right up."));
     if (GLOW_VOICE[i]) this.speak(i === 0 && !full ? "That's it. Nice and easy." : GLOW_VOICE[i], true);
   },
@@ -706,7 +751,7 @@ const Glow = {
     }
     for (const t of this.tg) glowDrawTarget(t, g, time);
 
-    const prime = P === "out" && this.pt > this.exDur ? 0.6 + 0.3 * Math.sin(clock() * 1.8) : 0;
+    const prime = (P === "out" && this.pt > this.exDur) || P === "listen" ? 0.6 + 0.3 * Math.sin(clock() * 1.8) : 0;
     glowDrawLighthouse(g, this.beamI, this.ignite, prime);
 
     // the breath out as mist over the water (warmer when the lantern is helping)

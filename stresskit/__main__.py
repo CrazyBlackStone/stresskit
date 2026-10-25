@@ -6,6 +6,7 @@
     python -m stresskit plot             raw live plot (wiring / signal check)
     python -m stresskit analyze FILE     run the engine over a recording and print what it found
     python -m stresskit ports            list serial ports
+    python -m stresskit voice "Hello"    say a line with the Cartesia voice (checks the key and voice)
 """
 
 from __future__ import annotations
@@ -68,6 +69,23 @@ def cmd_ports(_: argparse.Namespace) -> None:
     print(f"auto-detected XIAO: {find_port()}")
 
 
+def cmd_voice(args: argparse.Namespace) -> None:
+    from .cartesia import CartesiaVoice
+
+    async def run() -> None:
+        voice = CartesiaVoice.from_env(ROOT / "data")
+        try:
+            if not voice.configured:
+                print("No Cartesia key: set CARTESIA_API_KEY or put it on the first line of data/cartesia.key.")
+                return
+            path = await voice.speak(args.text)
+            print(f"saved {path} (voice {voice.voice_id}, {voice.model})" if path else f"failed: {voice.last_error}")
+        finally:
+            await voice.close()
+
+    asyncio.run(run())
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="python -m stresskit", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -94,6 +112,10 @@ def main(argv: list[str] | None = None) -> None:
     a.set_defaults(func=cmd_analyze)
 
     sub.add_parser("ports", help="list serial ports").set_defaults(func=cmd_ports)
+
+    v = sub.add_parser("voice", help="say a line with the Cartesia voice (saved under data/voice/)")
+    v.add_argument("text", nargs="?", default="Hello. I'm your lantern. Let's take a slow breath together.")
+    v.set_defaults(func=cmd_voice)
 
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")

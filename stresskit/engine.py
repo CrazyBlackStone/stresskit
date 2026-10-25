@@ -97,9 +97,11 @@ class EngineConfig:
     # Excluded SCRs: a big inhale the game asked for (expect_response) and SCRs that start while the
     # sensor hand moves (note_motion) are reported but don't count toward the stress index.
     # Matched on the SCR's peak: onset comes 1-3 s after a big breath and the rise takes 1-3 s more.
-    # (The detected onset can sit early when the previous response is still decaying.)
-    cue_delay_s: float = 1.5
+    # (The detected onset can sit early when the previous response is still decaying, so it only has to
+    # come after the cue minus a slack: a response already well underway at the cue wasn't the breath.)
+    cue_delay_s: float = 2.0
     cue_window_s: float = 8.0
+    cue_onset_slack_s: float = 1.5
     motion_margin_s: float = 1.0  # motion this close before an SCR's onset (or during its rise) taints it
 
 
@@ -213,7 +215,7 @@ class StressEngine:
         self._open_capture: dict | None = None
         self._open_seen_at_start = False
         self._reference: dict | None = None
-        self._cue: tuple[float, float] | None = None
+        self._cue: tuple[float, float, float] | None = None  # (peak from, peak until, onset from)
         self._last_motion = -math.inf
         self.n_cued = self.n_motion = 0
         self._pending: list[dict] = []
@@ -322,7 +324,7 @@ class StressEngine:
     def expect_response(self, seconds: float | None = None) -> dict:
         """The user is about to take a big breath on cue: its SCR is expected, not stress."""
         cfg = self.cfg
-        self._cue = (self.t + cfg.cue_delay_s, self.t + (seconds or cfg.cue_window_s))
+        self._cue = (self.t + cfg.cue_delay_s, self.t + (seconds or cfg.cue_window_s), self.t - cfg.cue_onset_slack_s)
         return {"ok": True, "until_t": round(self._cue[1], 2)}
 
     def note_motion(self) -> None:
@@ -501,7 +503,7 @@ class StressEngine:
         self.scrs.append(scr)
         del self.scrs[:-200]
         cue = self._cue
-        cued = cue is not None and cue[0] <= scr.t_peak <= cue[1]
+        cued = cue is not None and cue[0] <= scr.t_peak <= cue[1] and scr.t_onset >= cue[2]
         motion = not cued and self._last_motion >= scr.t_onset - self.cfg.motion_margin_s
         if cued:
             self.n_cued += 1

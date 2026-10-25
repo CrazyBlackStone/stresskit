@@ -164,6 +164,10 @@ never sees a stress number.
 * **Glow**: one big, quick breath in, then a slow breath out. The game sends
   `{"cmd":"expect_response"}` first; the SCR that follows is tagged `cued` and doesn't count as
   stress. SCRs that start while the sensor hand moves are tagged `motion` and don't count either.
+  The game waits for that response: a cued SCR has to start after the cue (1.5 s slack) and peak
+  2–11 s after it. If none comes, the lantern gently asks for the breath again instead of moving
+  on. With no sensor reading, the patient taps "I took my breath"; after two unanswered tries a
+  quiet "Skip this breath" appears.
 
 Stress is read in the quiet scene after each round (only while the hand is still) and compared
 with the minute before it. The activity that helps most gets a "bloom" bonus. Progress is
@@ -189,6 +193,34 @@ demo it without a stressed wearer; `serve --sim` also cycles through a stressful
 
 The activities live in `stresskit/web/lantern/{roots,sight,glow}.js`; `game.html` holds the
 shared core (scenes, sensor link, input, the reactive world, voice, sound and effects).
+
+#### The lantern's voice and kind words (Cartesia)
+
+The lantern speaks its lines in a soothing [Cartesia](https://docs.cartesia.ai) voice: Sonic 3.6, the
+library voice "Isla" (calm, gentle warmth, made for meditation), slowed to 0.85× with the `calm`
+emotion. **Kind words** (a button on the boat, offered after the first round) has the patient say three
+short affirmations back to the lantern ("I am safe right now."). The game records each one, the server
+transcribes it with Cartesia speech-to-text (`ink-whisper`), and a lenient match turns it into a gold
+star in the sky. Then one in their own words, which the lantern reflects back. Speaking raises skin
+conductance like a big breath, so each listening window opens a cue and that response isn't counted
+as stress. The nurse view lists which affirmations were said (never the patient's own words).
+
+The key stays on the server. Set it with either:
+
+```powershell
+$env:CARTESIA_API_KEY = "sk_car_..."        # this PowerShell session, then run serve
+```
+
+or put it on the first line of `data\cartesia.key` (gitignored). Optional: `CARTESIA_VOICE_ID` (any
+voice id from Cartesia's library) and `CARTESIA_MODEL` (default `sonic-3.6`).
+`python -m stresskit voice "Hello"` checks the key and voice and saves the line under `data/voice/`,
+where every spoken line is cached so it's only paid for once.
+
+Without a key (or if Cartesia fails) the game still works: it speaks with a natural browser voice if
+the device has one (Edge's "Online (Natural)" voices, Google's), and otherwise stays silent with its
+text bubble and a soft chime. It never uses the robotic Windows voices. Listening falls back to the
+browser's speech recognition, then to an "I said it" button. Settings → Lantern speaks aloud turns
+the voice off.
 
 ### REST (for engines that prefer polling)
 

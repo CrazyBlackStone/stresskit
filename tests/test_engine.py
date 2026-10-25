@@ -3,7 +3,7 @@ import math
 import pytest
 
 from stresskit import conversion
-from stresskit.dsp import LowPass, SCRDetector
+from stresskit.dsp import SCR, LowPass, SCRDetector
 from stresskit.engine import READY, EngineConfig, StressEngine
 from stresskit.sim import EDASimulator, Segment, bateman
 
@@ -208,6 +208,17 @@ def test_cued_breaths_are_not_stress():
     assert cued.n_cued >= 10
     assert cued_peak < 20
 
+
+
+def test_only_a_response_that_starts_after_the_cue_is_the_breath():
+    eng = StressEngine()
+    eng.t = 100.0
+    eng.expect_response(10.0)
+    eng._on_scr(SCR(t_onset=97.0, t_peak=102.5, amplitude_us=0.2, onset_us=1.0))  # already rising at the cue
+    eng._on_scr(SCR(t_onset=99.9, t_peak=101.6, amplitude_us=0.2, onset_us=1.0))  # peaks too soon to be the breath
+    assert eng.n_cued == 0 and eng._cue is not None
+    eng._on_scr(SCR(t_onset=101.5, t_peak=103.5, amplitude_us=0.2, onset_us=1.0))
+    assert eng.n_cued == 1 and eng._cue is None
 
 def test_scrs_during_hand_motion_are_not_stress():
     eng, peak = _breathing_session("motion")

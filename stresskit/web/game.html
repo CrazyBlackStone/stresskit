@@ -51,7 +51,7 @@ canvas#scene { position: fixed; inset: 0; width: 100%; height: 100%; display: bl
 .card .name { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 .card .lvl { color: var(--ink-soft); font-size: 15px; margin: 2px 0 8px; }
 .card .desc { color: var(--ink-faint); font-size: 15px; margin-top: 8px; }
-.card.invite { animation: invite 1.8s ease-in-out infinite; }
+.card.invite, .btn.invite { animation: invite 1.8s ease-in-out infinite; }
 @keyframes invite { 50% { transform: translateY(-6px); box-shadow: 0 0 40px rgba(255, 210, 122, .45); } }
 .card.bloom { border-color: rgba(255, 210, 122, .7); box-shadow: 0 0 28px rgba(255, 210, 122, .18); }
 .badge { position: absolute; top: -10px; right: 12px; background: var(--accent); color: #3a2a00; border-radius: 999px;
@@ -103,6 +103,15 @@ body[data-scene="sight"] #voice { top: auto; bottom: max(120px, calc(env(safe-ar
 #devpanel[hidden] { display: none; }
 #devpanel canvas { display: block; width: 100%; height: 130px; }
 #devpanel pre { margin: 6px 0 0; font: inherit; white-space: pre-wrap; }
+/* kind words: the affirmation to say, what the lantern hears, a quiet way out */
+.kw-aff { font-size: clamp(26px, 5vw, 44px); font-weight: 700; color: #fff6dc; margin: 6px auto 8px; max-width: 18em; }
+.kw-heard { min-height: 1.5em; color: var(--ink-faint); font-style: italic; }
+.mic { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--rose); margin-right: 8px;
+  vertical-align: middle; animation: micPulse 1.4s ease-in-out infinite; }
+@keyframes micPulse { 50% { transform: scale(1.6); opacity: .5; } }
+.linkbtn { background: none; border: 0; color: var(--ink-faint); font: inherit; font-size: 16px; padding: 12px 16px;
+  cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
+@media (prefers-reduced-motion: reduce) { .mic { animation: none; } }
 </style>
 </head>
 <body>
@@ -165,7 +174,7 @@ function freshSave() {
   return {
     flame: "Amber flame", traits: { roots: { lvl: 1, xp: 0 }, sight: { lvl: 1, xp: 0 }, glow: { lvl: 1, xp: 0 } },
     light: 0, stage: 0, collection: [], effects: { roots: [], sight: [], glow: [] }, rounds: 0, bloom: null,
-    best: { roots: 0, sight: 0, glow: 0 },
+    best: { roots: 0, sight: 0, glow: 0 }, kind: 0,
   };
 }
 function loadSave() {
@@ -268,6 +277,7 @@ const dev = {
   draw(now) {
     if (!this.on || now - this.lastDraw < 0.1) return;
     this.lastDraw = now;
+    if (now - (this.voiceAt || -1e9) > 5) { this.voiceAt = now; speech.refresh(); }
     this.chart(now);
     this.panel.querySelector("pre").textContent = this.text(now);
   },
@@ -315,7 +325,7 @@ const dev = {
   text(now) {
     const st = link.state;
     const f = (x, d = 2) => (x == null || Number.isNaN(+x) ? "–" : (+x).toFixed(d));
-    const sceneName = Object.entries({ Welcome, Setup, Harbor, Roots, Sight, Glow, Rest, Results, Voyage, Collection, Settings })
+    const sceneName = Object.entries({ Welcome, Setup, Harbor, Roots, Sight, Glow, Rest, Results, Voyage, Collection, Kind, Settings })
       .find(([, S]) => scene && Object.getPrototypeOf(scene) === S)?.[0] || "?";
     const L = [`DEV · ${sceneName} · ${link.connected ? (st ? st.device.source : "connecting") : "server offline"}  (D hides)`];
     if (!st) return L.concat("waiting for the stress server…").join("\n");
@@ -347,6 +357,11 @@ const dev = {
       L.push(`rest    pre ${f(scene.r.meta.pre, 1)} · post ${el < CFG.restMeasureFrom ? `starts at ${CFG.restMeasureFrom} s (${f(el, 0)} s)` : f(stressBetween(scene.start + CFG.restMeasureFrom, now), 1)}`);
     } else if (scene && scene.meta && "pre" in scene.meta) L.push(`round   pre-round stress ${f(scene.meta.pre, 1)}`);
     L.push(`effects ${Object.keys(ACTS).map((a) => `${a} ${save.effects[a].slice(-3).join("/") || "–"}`).join(" · ")}`);
+    const vs = speech.status;
+    L.push(`voice   ${!vs ? "status ?" : vs.cartesia ? `Cartesia ${vs.tts ? "tts ✓" : "tts paused"} ${vs.stt ? "stt ✓" : "stt paused"} · ${vs.cached} cached` : "Cartesia off (no key)"}` +
+      ` · last line: ${speech.via}${speech.speaking ? " (speaking)" : ""}${vs && vs.error ? ` · ${vs.error.slice(0, 40)}` : ""}`);
+    L.push(`        ear ${ear.on ? `LISTENING (${ear.mode}${ear.talking ? ", talking" : ear.busy ? ", transcribing" : ""}) lvl ${f(ear.level, 3)}` : ear.available() ? `idle (${ear.canRecord() ? "cartesia" : "browser"})` : "tap only"}` +
+      `${ear.error ? ` (${ear.error})` : ""} · heard "${(ear.heard || "").slice(-40)}"`);
     L.push(`adapt   challenge ×${f(challengeFactor())} · world calm ${f(world.calm)} · gentle ${f(mood.gentle)} · help ${assist.on ? "ON" : "off"}${assist.forced ? " (forced, A)" : ""} × ${assist.count}`);
     return L.join("\n");
   },
@@ -502,14 +517,210 @@ const assist = {
 function challengeFactor() { return clamp(1 - 0.4 * assist.level - 0.15 * mood.gentle, 0.45, 1); }
 
 const voice = {
-  say(text, seconds = 4) {
+  say(text, seconds = 4, speak = true) {
     const el = document.getElementById("voice");
     if (!el) return;
     el.textContent = text; el.classList.add("on");
     clearTimeout(this._t); this._t = setTimeout(() => el.classList.remove("on"), seconds * 1000);
+    if (speak) speech.say(text);
   },
   hush() { const el = document.getElementById("voice"); if (el) el.classList.remove("on"); },
 };
+
+// The lantern's spoken voice: a soothing Cartesia voice, rendered by the server (stresskit/cartesia.py, which
+// holds the key and caches each line). Without Cartesia, a natural-sounding browser voice if this device has
+// one (Edge's "Online (Natural)" voices, Google's); never the robotic desktop ones (David, Mark, Zira):
+// then the lantern stays silent, with its text bubble and a soft chime. Settings can turn speaking off.
+function apiUrl(path) {
+  const server = PARAMS.get("server") || (location.protocol.startsWith("http") ? location.host : "localhost:8765");
+  return `${location.protocol === "https:" ? "https" : "http"}://${server}${path}`;
+}
+const speech = {
+  enabled: (() => { try { return localStorage.getItem("lantern-speech") !== "off"; } catch (_) { return true; } })(),
+  status: null, seq: 0, audio: null, speaking: false, via: "–",
+  setEnabled(v) { this.enabled = v; try { localStorage.setItem("lantern-speech", v ? "on" : "off"); } catch (_) {} if (!v) this.stop(); },
+  async refresh() {
+    try { this.status = await (await fetch(apiUrl("/api/voice/status"))).json(); } catch (_) { this.status = null; }
+  },
+  // Speak a line; onend runs once when it's over (right away when speaking is off or a newer line takes over).
+  async say(text, onend) {
+    this.stop();
+    const id = ++this.seq;
+    let ended = false;
+    const done = () => { if (ended) return; ended = true; if (id === this.seq) this.speaking = false; if (onend) onend(); };
+    if (!this.enabled) { this.via = "off"; setTimeout(done, 0); return; }
+    this.speaking = true;
+    let r = null;
+    if (this.status && this.status.tts) {
+      try { r = await fetch(apiUrl("/api/voice/say"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) }); }
+      catch (_) { r = null; }
+    }
+    if (id !== this.seq) return done();
+    if (r && r.status === 200) {
+      const url = URL.createObjectURL(await r.blob());
+      if (id !== this.seq) { URL.revokeObjectURL(url); return done(); }
+      const a = new Audio(url);
+      a.volume = 0.95; this.audio = a; this.via = "cartesia";
+      a.onended = a.onerror = () => { URL.revokeObjectURL(url); done(); };
+      a.play().catch(() => this.browserSay(text, id, done));
+      return;
+    }
+    this.browserSay(text, id, done);
+  },
+  browserSay(text, id, done) {
+    const words = text.split(/\s+/).length, v = this.pickVoice();
+    if (!v) {  // no natural voice here: stay quiet, keep the pace of someone reading it
+      this.via = "text only"; sfx.chime(4, 0.04);
+      setTimeout(() => { if (id === this.seq) done(); }, 700 + 330 * words);
+      return;
+    }
+    const u = new SpeechSynthesisUtterance(text);
+    u.voice = v; u.lang = v.lang; u.rate = 0.9; u.pitch = 1; u.volume = 0.9;
+    u.onend = u.onerror = done;
+    this.via = `browser: ${v.name}`;
+    speechSynthesis.speak(u);
+    setTimeout(() => { if (id === this.seq) done(); }, 2500 + 650 * words);  // onend sometimes never fires
+  },
+  pickVoice() {
+    if (!("speechSynthesis" in window)) return null;
+    const ok = speechSynthesis.getVoices().filter((v) => /^en/i.test(v.lang) && /natural|online|google/i.test(v.name) && !/david|mark|zira/i.test(v.name));
+    return ok.find((v) => /aria|jenny|emma|ava|libby|sonia|natasha|female/i.test(v.name)) || ok[0] || null;
+  },
+  stop() {
+    this.seq++; this.speaking = false;
+    if (this.audio) { this.audio.pause(); this.audio = null; }
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+  },
+};
+speech.refresh();
+setInterval(() => speech.refresh(), 30000);
+
+// Listening for the patient's own voice (kind words). First choice: record the utterance (MediaRecorder,
+// cut by a simple loudness detector) and have the server transcribe it with Cartesia. Then the browser's
+// own speech recognition (often missing inside desktop apps). Last: the patient taps "I said it".
+// ear.hear("...") feeds a transcript by hand (dev / testing).
+const ear = {
+  SR: window.SpeechRecognition || window.webkitSpeechRecognition || null,
+  mode: "none", rec: null, on: false, denied: false, micDenied: false, sttDown: false, handler: null,
+  heard: "", error: null, talking: false, busy: false, level: 0, stream: null, token: null,
+  canRecord() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder) && !this.micDenied &&
+      !this.sttDown && !!(speech.status && speech.status.stt);
+  },
+  available() { return this.canRecord() || (!!this.SR && !this.denied); },
+  // handler(alternatives, isFinal) gets each result; onStop runs when a listening attempt ends by itself
+  start(handler, onStop) {
+    this.stop();
+    this.handler = handler;
+    if (this.canRecord()) { this.mode = "cartesia"; this.on = true; this.recordOnce(onStop); return true; }
+    if (!this.SR || this.denied) { this.mode = "none"; return false; }
+    this.mode = "browser";
+    const rec = new this.SR();
+    rec.lang = navigator.language || "en-US"; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 3;
+    rec.onresult = (e) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const res = e.results[i], alts = Array.from(res).map((a) => a.transcript);
+        this.heard = alts[0] || "";
+        if (this.handler) this.handler(alts, res.isFinal);
+      }
+    };
+    rec.onerror = (e) => {
+      this.error = e.error;
+      if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(e.error)) this.denied = true;
+    };
+    rec.onend = () => { if (this.rec !== rec) return; this.rec = null; this.on = false; if (onStop) onStop(); };
+    try { rec.start(); this.rec = rec; this.on = true; return true; } catch (_) { this.denied = true; this.mode = "none"; return false; }
+  },
+  // One utterance: wait up to 10 s for speech, stop 1.1 s after it goes quiet (or at 9 s of talking), transcribe.
+  async recordOnce(onStop) {
+    const token = this.token = {};
+    const ended = () => { if (this.token !== token) return; this.on = false; this.talking = false; this.busy = false; if (onStop) onStop(); };
+    try {
+      if (!this.stream) this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (e) { this.micDenied = true; this.error = e.name || "mic"; return ended(); }
+    if (this.token !== token) return;
+    if (!this.actx) {
+      this.actx = new (window.AudioContext || window.webkitAudioContext)();
+      this.an = this.actx.createAnalyser(); this.an.fftSize = 1024;
+      this.actx.createMediaStreamSource(this.stream).connect(this.an);
+    }
+    if (this.actx.state === "suspended") this.actx.resume();
+    const mime = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm", "audio/mp4"].find((m) => MediaRecorder.isTypeSupported(m)) || "";
+    let rec;
+    try { rec = new MediaRecorder(this.stream, mime ? { mimeType: mime } : undefined); }
+    catch (e) { this.micDenied = true; this.error = "recorder"; return ended(); }
+    const chunks = [], buf = new Float32Array(this.an.fftSize), t0 = performance.now();
+    let floor = null, loudMs = 0, spokeAt = null, quietSince = null;
+    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = async () => {
+      clearInterval(this.vad);
+      if (this.token !== token) return;
+      this.talking = false;
+      if (spokeAt == null || !chunks.length) return ended();  // nothing said this time
+      this.busy = true;
+      try {
+        const blob = new Blob(chunks, { type: (rec.mimeType || mime || "audio/webm").split(";")[0] });
+        const r = await fetch(apiUrl("/api/voice/transcribe"), { method: "POST", headers: { "Content-Type": blob.type }, body: blob });
+        if (this.token !== token) return;
+        if (r.ok) {
+          const d = await r.json();
+          this.heard = d.text || "";
+          if (this.handler && this.heard) this.handler([this.heard], true);
+        } else { this.sttDown = true; this.error = `stt ${r.status}`; }
+      } catch (_) { this.sttDown = true; this.error = "stt offline"; }
+      ended();
+    };
+    this.recorder = rec;
+    rec.start(250);
+    this.vad = setInterval(() => {
+      if (this.token !== token || rec.state !== "recording") return;
+      this.an.getFloatTimeDomainData(buf);
+      let sum = 0; for (const v of buf) sum += v * v;
+      const rms = Math.sqrt(sum / buf.length), now = performance.now();
+      this.level = rms;
+      if (now - t0 < 350) { floor = floor == null ? rms : Math.min(floor, rms); return; }  // room noise first
+      const thr = Math.max(0.012, (floor || 0) * 3);
+      if (rms > thr) { loudMs += 50; quietSince = null; if (loudMs >= 200 && spokeAt == null) { spokeAt = now; this.talking = true; } }
+      else if (spokeAt != null && rms < thr * 0.7) quietSince = quietSince ?? now;
+      const done = spokeAt != null ? (quietSince != null && now - quietSince > 1100) || now - spokeAt > 9000 : now - t0 > 10000;
+      if (done) rec.stop();
+    }, 50);
+  },
+  stop() {
+    this.token = null; clearInterval(this.vad);
+    const r = this.rec; this.rec = null; this.on = false; this.handler = null; this.talking = false; this.busy = false;
+    if (r) { try { r.abort(); } catch (_) {} }
+    if (this.recorder && this.recorder.state === "recording") { try { this.recorder.stop(); } catch (_) {} }
+    this.recorder = null;
+  },
+  release() {  // let go of the microphone (its indicator turns off) when the scene ends
+    this.stop();
+    if (this.stream) { this.stream.getTracks().forEach((t) => t.stop()); this.stream = null; }
+    if (this.actx) { this.actx.close().catch(() => {}); this.actx = null; }
+  },
+  hear(text) { this.heard = text; if (this.handler) this.handler([text], true); },
+};
+window.ear = ear;
+
+// Lenient: most of the affirmation's words, in any order, small mishearings allowed ("heal" ~ "heel").
+function kindMatch(heard, target) {
+  const EXPAND = { "i'm": "i am", "it's": "it is", "i'll": "i will", "can't": "can not", "you're": "you are" };
+  const norm = (s) => s.toLowerCase().replace(/[‘’`]/g, "'").replace(/[^a-z' ]+/g, " ")
+    .replace(/\b(i'm|it's|i'll|can't|you're)(?![a-z])/g, (w) => EXPAND[w])
+    .split(/\s+/).filter(Boolean);
+  const want = norm(target), got = norm(heard);
+  if (!want.length || !got.length) return 0;
+  const near = (a, b) => {
+    if (a === b) return true;
+    if (Math.min(a.length, b.length) < 4 || Math.abs(a.length - b.length) > 1) return false;
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return d[a.length][b.length] <= 1;
+  };
+  return want.filter((w) => got.some((g) => near(g, w))).length / want.length;
+}
 
 // Soft generated sound. A pentatonic scale, so any sequence of chimes sounds pleasant.
 const sfx = {
@@ -644,6 +855,24 @@ function drawSky(time, dawn = save.stage / STAGES.length, horizon = 0.62) {
   ctx.globalAlpha = 1 - dawn * 0.7; ctx.fillStyle = "#eef0ff";
   ctx.beginPath(); ctx.arc(mx, my, mr, 0, 6.29); ctx.fill(); ctx.globalAlpha = 1;
   drawConstellations(time, dawn);
+  drawKindStars(time, dawn);
+}
+// One gold star for every kind word the patient has said. The newest one flares when it's born.
+const kindStars = { bornAt: -1e9 };  // when the newest star was born (it flares)
+function kindStarPos(i) { const r = seeded(9001 + i * 7919); return [W * (0.06 + 0.88 * r()), H * (0.05 + 0.3 * r())]; }
+function drawKindStars(time, dawn) {
+  const n = Math.min(60, save.kind || 0), age = clock() - kindStars.bornAt;
+  ctx.save();
+  for (let i = 0; i < n; i++) {
+    const [x, y] = kindStarPos(i), fresh = i === n - 1 && age < 3 ? 1 - age / 3 : 0;
+    const r = 2.4 + 0.6 * Math.sin(time * 1.3 + i) + 9 * fresh;
+    ctx.globalAlpha = (0.75 + 0.25 * Math.sin(time * 0.9 + i * 1.7)) * (1 - dawn * 0.6);
+    ctx.fillStyle = "#ffe08a"; ctx.shadowColor = "#ffd27a"; ctx.shadowBlur = 10 + 30 * fresh;
+    ctx.beginPath();  // a soft four-pointed star
+    ctx.moveTo(x, y - r * 2); ctx.quadraticCurveTo(x, y, x + r * 2, y); ctx.quadraticCurveTo(x, y, x, y + r * 2);
+    ctx.quadraticCurveTo(x, y, x - r * 2, y); ctx.quadraticCurveTo(x, y, x, y - r * 2); ctx.fill();
+  }
+  ctx.restore();
 }
 function drawConstellations(time, dawn) {
   const owned = save.collection.filter((c) => c.act === "sight");
@@ -976,12 +1205,18 @@ const Harbor = {
   enter() {
     if (!save.bloom) { save.bloom = pickBloom(); persist(); }
     this.render();
-    this.invite();
+    if (!this.invite()) this.offerKind();
+  },
+  offerKind() {  // once per visit to the hospital, after a first round, the lantern suggests kind words
+    if (Kind.offered || save.rounds < 1) return;
+    Kind.offered = true;
+    const b = $("#kind"); if (b) b.classList.add("invite");
+    setTimeout(() => { if (Object.getPrototypeOf(scene) === Harbor) voice.say("Would you like to say a few kind words with me?", 5); }, 1200);
   },
   invite() {
     // After a round that didn't calm (stress rose by 3+), steer toward another activity, warmly.
     const last = save.lastRound;
-    if (!last || last.delta == null || last.delta > -3 || last.invited) return;
+    if (!last || last.delta == null || last.delta > -3 || last.invited) return false;
     last.invited = true;
     if (save.bloom === last.act) save.bloom = Object.keys(ACTS).filter((a) => a !== last.act).sort((a, b) => effectMean(b) - effectMean(a))[0];
     persist();
@@ -990,6 +1225,7 @@ const Harbor = {
     if (card) card.classList.add("invite");
     setTimeout(() => voice.say(INVITES[save.bloom], 6), 900);
     link.mark(`lantern adapt invite ${save.bloom} after ${last.act} d=${last.delta.toFixed(1)}`);
+    return true;
   },
   render() {
     const sr = stageReady(save.stage), done = save.stage >= STAGES.length;
@@ -1006,10 +1242,12 @@ const Harbor = {
       : `<button class="btn" id="sail" disabled>Next: ${STAGES[save.stage].name} · needs ${sr.need.join(", ")}</button>`;
     setUI(`${topBar(`<span class="pill">Voyage <b>${save.stage}</b> / ${STAGES.length}</span>`)}
       <div class="spacer"></div><div class="cards fade-in">${cards}</div>
-      <div class="row fade-in" style="margin-top:14px">${sail}<button class="btn" id="coll">Collection (${save.collection.length})</button></div>`);
+      <div class="row fade-in" style="margin-top:14px">${sail}<button class="btn" id="coll">Collection (${save.collection.length})</button>
+      <button class="btn" id="kind">🌟 Kind words</button></div>`);
     wireGear();
     ui.querySelectorAll(".card").forEach((c) => (c.onclick = () => startRound(c.dataset.a)));
     $("#coll").onclick = () => go(Collection);
+    $("#kind").onclick = () => go(Kind);
     const s = $("#sail"); if (s && !s.disabled) s.onclick = () => go(Voyage, done ? STAGES.length - 1 : save.stage);
   },
   update() {},
@@ -1207,6 +1445,189 @@ const Collection = {
   draw(time, dt) { Harbor.draw.call(this, time, dt); },
 };
 
+// ---- Kind words: the lantern says an affirmation, the patient says it back. Out loud when speech recognition
+// can hear it (a lenient match), or by tapping "I said it". Each one becomes a gold star in the sky; then one
+// in their own words, which the lantern reflects back warmly. Speaking aloud raises skin conductance like a big
+// breath, so every listening window opens a cue and that response isn't counted as stress.
+
+const KIND_BUILTIN = ["I am safe right now.", "I can take this one breath at a time.", "My body knows how to heal.",
+  "I am in caring hands.", "It's okay to feel nervous.", "I am calm, and I am ready.", "I am stronger than I feel.", "Right now, I can rest."];
+const KIND_PRAISE = ["I heard you.", "Beautiful.", "That's lovely."];
+const KIND_MATCH = 0.6;  // share of the affirmation's words heard
+// "I am brave" -> "Yes. You are brave." Anything else gets a gentle acknowledgement.
+function kindEcho(said) {
+  const t = said.trim().replace(/\s+/g, " ").replace(/[.!?]+$/, "").slice(0, 120);
+  const sw = { "i'm": "you're", "i am": "you are", "i": "you", "me": "you", "my": "your", "mine": "yours", "myself": "yourself" };
+  const out = t.replace(/\b(i'm|i am|i|me|my|mine|myself)\b/gi, (w) => sw[w.toLowerCase()]);
+  return /^you/i.test(out) ? `Yes. ${out[0].toUpperCase()}${out.slice(1)}.` : "I heard you. Those are kind words.";
+}
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const Kind = {
+  allowComfort: true, offered: false,
+  enter() {
+    this.list = KIND_BUILTIN; this.i = 0; this.n = 3; this.said = 0;
+    this.state = "intro"; this.since = clock(); this.glow = 0.7; this.started = false;
+    setUI(`${topBar(`<button class="btn" id="finish" style="min-height:44px;padding:0 18px">Done</button>`)}<div class="spacer"></div>
+      <div class="prompt fade-in" id="kw"></div><div class="spacer" style="flex:.25"></div>
+      <div class="row" id="kw-btns"></div><div class="spacer" style="flex:.15"></div>`);
+    wireGear();
+    $("#finish").onclick = () => go(Harbor);
+    this.show("Kind words", "", "Let's say a few kind words together.");
+    link.mark("lantern affirm start");
+    setTimeout(() => this.begin(), 600);
+  },
+  exit() { this.state = "gone"; ear.release(); speech.stop(); },
+  begin() {
+    if (this.started || scene !== this) return;
+    this.started = true;
+    const rest = this.list.slice(1).sort(() => Math.random() - 0.5);
+    this.picks = [this.list[0], ...rest].slice(0, this.n);
+    const line = "Let's say a few kind words together. I'll say one, then you say it back to me.";
+    voice.say(line, 5, false);
+    speech.say(line, () => this.lead());
+  },
+  show(h, aff, p) {
+    const el = $("#kw");
+    if (el) el.innerHTML = `${h ? `<h2>${esc(h)}</h2>` : ""}${aff ? `<div class="kw-aff">“${esc(aff.replace(/[.]$/, ""))}”</div>` : ""}` +
+      `<p id="kw-p">${p}</p><p class="kw-heard" id="kw-heard"></p>`;
+  },
+  buttons(said, skip) {
+    const el = $("#kw-btns");
+    if (!el) return;
+    el.innerHTML = (said ? `<button class="btn primary" id="kw-said">I said it</button>` : "") + (skip ? `<button class="linkbtn" id="kw-skip">Skip this one</button>` : "");
+    if (said) $("#kw-said").onclick = () => this.got("tapped");
+    if (skip) $("#kw-skip").onclick = () => this.skip();
+  },
+  heardText(t) { const el = $("#kw-heard"); if (el) el.textContent = t ? `“${t.trim()}”` : ""; },
+  lead() {  // the lantern says the affirmation, then listens
+    if (scene !== this) return;
+    this.state = "lead"; this.reprompted = false; this.buttons(false, false);
+    this.show(this.i === 0 ? "Say it with me" : "And this one", this.picks[this.i], "");
+    speech.say(this.picks[this.i], () => setTimeout(() => this.listen(), 300));  // only listen once it has finished talking
+  },
+  listen() {
+    if (scene !== this || (this.state !== "lead" && this.state !== "listen")) return;
+    if (this.state === "lead") { this.since = clock(); this.heardText(""); }  // a restart keeps the clock going
+    this.state = "listen";
+    link.send({ cmd: "expect_response", seconds: 12 });
+    const aff = this.picks[this.i];
+    const hearing = ear.start((alts, final) => {
+      if (this.state !== "listen") return;
+      this.heardText(alts[0]);
+      if (Math.max(...alts.map((a) => kindMatch(a, aff))) >= KIND_MATCH) this.got("said");
+    }, () => {  // recognition stopped by itself: carry on listening, or switch to tapping if the mic was refused
+      if (scene !== this || this.state !== "listen") return;
+      if (ear.available()) setTimeout(() => this.listen(), 250); else this.tapMode();
+    });
+    const p = $("#kw-p");
+    if (!hearing) return this.tapMode();
+    if (p) p.innerHTML = `<span class="mic"></span>Listening… say it out loud`;
+    if (this.reprompted) this.buttons(true, true);
+  },
+  tapMode() {
+    const p = $("#kw-p");
+    if (p) p.textContent = "Say it out loud, or quietly to yourself, then tap “I said it”.";
+    this.buttons(true, this.reprompted);
+  },
+  reprompt() {  // gently, once; then a tap and a skip are offered too
+    this.reprompted = true; ear.stop(); this.state = "lead";
+    const line = "Take your time. Say it whenever you're ready.";
+    voice.say(line, 4, false);
+    speech.say(line, () => setTimeout(() => this.listen(), 300));
+    this.buttons(true, true);
+  },
+  got(how) {
+    if (this.state !== "listen" && !(this.state === "lead" && this.reprompted)) return;
+    this.state = "praise"; ear.stop();
+    this.said++; save.kind = (save.kind || 0) + 1; persist();
+    kindStars.bornAt = clock();
+    const [sx, sy] = kindStarPos(Math.min(59, save.kind - 1));
+    sfx.sparkle(); fx.burst(sx, sy, { color: "#ffe08a", n: 30, speed: 90, life: 1.6 });
+    fx.burst(W / 2, H * 0.7, { color: flameColor(), n: 18, speed: 70 });
+    this.glow = 1.6;
+    link.mark(`lantern affirm ${how} ${this.picks[this.i]}`.slice(0, 80));
+    const praise = KIND_PRAISE[this.i % KIND_PRAISE.length];
+    this.buttons(false, false);
+    this.show(praise, "", how === "said" ? "A new star is shining for you." : "A new star is shining.");
+    speech.say(praise, () => setTimeout(() => this.next(), 900));
+  },
+  skip() {
+    if (this.state !== "listen" && this.state !== "lead") return;
+    this.state = "praise"; ear.stop(); speech.stop();
+    link.mark("lantern affirm skip");
+    this.next();
+  },
+  next() {
+    if (scene !== this) return;
+    this.i++;
+    if (this.i < this.n) this.lead(); else this.own();
+  },
+  own() {  // one in their own words (needs ears); the lantern reflects it back
+    if (!ear.available()) return this.finish();
+    this.state = "ownLead"; this.buttons(false, false);
+    this.show("In your own words", "", "Say something kind to yourself. Anything at all.");
+    speech.say("Now say something kind to yourself, in your own words.", () => setTimeout(() => this.listenOwn(), 300));
+  },
+  listenOwn() {
+    if (scene !== this || (this.state !== "ownLead" && this.state !== "own")) return;
+    if (this.state === "ownLead") this.since = clock();
+    this.state = "own";
+    link.send({ cmd: "expect_response", seconds: 12 });
+    const hearing = ear.start((alts, final) => {
+      if (this.state !== "own") return;
+      this.heardText(alts[0]);
+      if (final && alts[0].trim().split(/\s+/).length >= 2) this.ownSaid(alts[0]);
+    }, () => {
+      if (scene !== this || this.state !== "own") return;
+      if (ear.available()) setTimeout(() => this.listenOwn(), 250); else this.finish();
+    });
+    const p = $("#kw-p");
+    if (!hearing) return this.finish();
+    if (p) p.innerHTML = `<span class="mic"></span>Listening…`;
+  },
+  ownSaid(text) {
+    this.state = "reply"; ear.stop(); this.buttons(false, false);
+    this.said++; save.kind = (save.kind || 0) + 1; persist(); kindStars.bornAt = clock();
+    const [sx, sy] = kindStarPos(Math.min(59, save.kind - 1));
+    sfx.sparkle(); fx.burst(sx, sy, { color: "#ffe08a", n: 30, speed: 90, life: 1.6 }); this.glow = 1.6;
+    link.mark("lantern affirm own words");  // what they said stays private: not logged
+    const reply = kindEcho(text);
+    this.show("", reply, "");
+    speech.say(reply, () => setTimeout(() => this.finish(), 1200));
+  },
+  finish() {
+    if (scene !== this || this.state === "end") return;
+    this.state = "end"; ear.stop(); this.buttons(false, false);
+    link.mark(`lantern affirm done said=${this.said}`);
+    const line = "These words will stay with your lantern.";
+    this.show(line, "", this.said ? `${this.said} new star${this.said > 1 ? "s" : ""} in your sky.` : "Come back to them any time.");
+    speech.say(line, () => setTimeout(() => { if (scene === this) go(Harbor); }, 2500));
+  },
+  update(dt) {
+    this.glow += (1 - this.glow) * (1 - Math.exp(-dt / 2.5));
+    if (this.state === "listen" && !this.reprompted && clock() - this.since > 9 && !ear.talking && !ear.busy) this.reprompt();
+    else if (this.state === "own" && clock() - this.since > 10 && !$("#kw-skip")) {
+      this.buttons(false, true);
+      $("#kw-skip").onclick = () => { link.mark("lantern affirm skip own"); this.finish(); };
+    }
+  },
+  draw(time, dt) {
+    drawSky(time); drawSea(time);
+    const size = Math.min(W, H) * 0.13, top = drawBoat(W * 0.5, H * 0.8, size, time);
+    drawLantern(top.x, top.y + Math.sin(time * 1.2) * 4, size * 0.24, this.glow, time);
+    if (ear.on && (this.state === "listen" || this.state === "own")) {  // soft rings: the lantern is listening
+      ctx.save();
+      for (let k = 0; k < 3; k++) {
+        const ph = ((time * 0.6 + k / 3) % 1);
+        ctx.globalAlpha = 0.35 * (1 - ph); ctx.strokeStyle = flameColor(); ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(top.x, top.y, size * (0.3 + 0.9 * ph), 0, 6.29); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    drawComfort(dt, top.x, top.y);
+  },
+};
+
 const Settings = {
   allowComfort: false,
   enter({ back }) {
@@ -1219,6 +1640,8 @@ const Settings = {
       <label>Sleeve sensitivity <select id="sens"><option value="35">Gentle (big movements)</option><option value="25" selected>Medium</option><option value="15">Quick (small movements)</option></select></label>
       <label>Sensor <span style="color:var(--ink-soft)">${sensor}${link.imuPresent ? " · sleeve connected" : ""}</span></label>
       <label>Sound <input type="checkbox" id="sound" ${sfx.enabled ? "checked" : ""} style="width:24px;height:24px"></label>
+      <label><span>Lantern speaks aloud <small style="color:var(--ink-faint)">${speech.status && speech.status.tts ? "Cartesia voice" : speech.pickVoice() ? "this device's voice" : "no natural voice here: text only"}</small></span>
+        <input type="checkbox" id="speak" ${speech.enabled ? "checked" : ""} style="width:24px;height:24px"></label>
       <label>Sensor readout (dev) <input type="checkbox" id="devmode" ${dev.on ? "checked" : ""} style="width:24px;height:24px"></label>
       <div class="row" style="margin-top:16px">
         <button class="btn" id="setup" ${link.imuPresent ? "" : "disabled"}>Set up the sleeve again</button>
@@ -1228,6 +1651,7 @@ const Settings = {
     $("#mode").onchange = (e) => input.setMode(e.target.value);
     $("#devmode").onchange = (e) => dev.toggle(e.target.checked);
     $("#sound").onchange = (e) => { sfx.start(); sfx.setEnabled(e.target.checked); };
+    $("#speak").onchange = (e) => speech.setEnabled(e.target.checked);
     $("#sens").onchange = (e) => link.send({ cmd: "imu_range", x_deg: +e.target.value, y_deg: Math.round(+e.target.value * 0.6) });
     $("#setup").onclick = () => go(Setup);
     $("#reset").onclick = () => {

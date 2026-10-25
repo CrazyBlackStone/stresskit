@@ -7,6 +7,9 @@
     GET  /api/state    latest state snapshot (for engines that prefer polling)
     GET  /api/imu      latest IMU / finger-tracing sample
     POST /api/command  {"cmd": "calibrate" | "reference_start" | "imu_recenter" | ...}
+    GET  /api/voice/status         Cartesia voice: configured or not (see cartesia.py; never the key)
+    POST /api/voice/say            {"text"} -> audio/mpeg in the Lantern's voice, or 503 (no Cartesia)
+    POST /api/voice/transcribe     audio body (webm/ogg/wav...) -> {"text"} via Cartesia speech-to-text, or 503
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from typing import Any, Callable
 from aiohttp import WSMsgType, web
 
 from . import __version__, conversion
+from .cartesia import CartesiaVoice
 from .device import ImuSample, Sample, SerialReader
 from .engine import EngineConfig, Profile, StressEngine
 from .motion import AXES, MotionTracker
@@ -368,7 +372,8 @@ async def run_replay(hub: Hub, path: Path, speed: float) -> None:
 # ------------------------------------------------------------------ web app
 
 
-def build_app(hub: Hub) -> web.Application:
+def build_app(hub: Hub, voice: CartesiaVoice | None = None) -> web.Application:
+    voice = voice or CartesiaVoice(None, Path("data") / "voice")  # no key: the game falls back on its own
     @web.middleware
     async def cors(request: web.Request, handler: Callable) -> web.StreamResponse:
         if request.method == "OPTIONS":
@@ -406,6 +411,31 @@ def build_app(hub: Hub) -> web.Application:
             return web.json_response(hub.command(msg))
         except (KeyError, ValueError, TypeError) as exc:
             return web.json_response({"ok": False, "error": str(exc)}, status=400)
+
+    async def voice_status(_: web.Request) -> web.Response:
+        return web.json_response(voice.status())
+
+    async def voice_say(request: web.Request) -> web.StreamResponse:
+        try:
+            text = " ".join(str((await request.json())["text"]).split())
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return web.json_response({"ok": False, "error": "body must be {\"text\": ...}"}, status=400)
+        if not text or len(text) > 300:
+            return web.json_response({"ok": False, "error": "text must be 1-300 characters"}, status=400)
+        path = await voice.speak(text)
+        if path is None:
+            return web.json_response({"ok": False, "error": voice.last_error or "Cartesia not configured"}, status=503)
+        return web.FileResponse(path, headers={"Content-Type": "audio/mpeg", "Cache-Control": "max-age=86400"})
+
+    async def voice_transcribe(request: web.Request) -> web.Response:
+        audio = await request.read()  # a few seconds of speech: well under the 1 MB body limit
+        text = await voice.transcribe(audio, request.headers.get("Content-Type", "audio/webm"))
+        if text is None:
+            return web.json_response({"ok": False, "error": voice.last_error or "Cartesia not configured"}, status=503)
+        return web.json_response({"ok": True, "text": text})
+
+    async def close_voice(_: web.Application) -> None:
+        await voice.close()
 
     async def ws_handler(request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=20.0)
@@ -451,6 +481,10 @@ def build_app(hub: Hub) -> web.Application:
     app.router.add_get("/api/imu", api_imu)
     app.router.add_post("/api/command", api_command)
     app.router.add_route("OPTIONS", "/api/command", api_state)
+    app.router.add_get("/api/voice/status", voice_status)
+    app.router.add_post("/api/voice/say", voice_say)
+    app.router.add_post("/api/voice/transcribe", voice_transcribe)
+    app.on_cleanup.append(close_voice)
     return app
 
 
@@ -479,7 +513,8 @@ async def serve(
     source = "simulator" if sim else f"replay:{replay.name}" if replay else "serial"
     hub = Hub(engine, recorder, source, imu_recorder)
 
-    app = build_app(hub)
+    voice = CartesiaVoice.from_env(data_dir)
+    app = build_app(hub, voice)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     await web.TCPSite(runner, host, http_port).start()
@@ -487,6 +522,8 @@ async def serve(
     print(f"stresskit {__version__}: dashboard {url}/   websocket ws://{url.split('://')[1]}/ws", flush=True)
     if recorder:
         print(f"recording to {recorder.path}", flush=True)
+    print("Cartesia voice: " + (f"on (voice {voice.voice_id}, {voice.model})" if voice.configured else
+          "off (set CARTESIA_API_KEY or put the key in data/cartesia.key; the game falls back meanwhile)"), flush=True)
 
     loop = asyncio.get_running_loop()
     tasks: list[asyncio.Task] = []
