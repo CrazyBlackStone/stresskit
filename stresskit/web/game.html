@@ -81,12 +81,21 @@ canvas#scene { position: fixed; inset: 0; width: 100%; height: 100%; display: bl
 .fade-in { animation: fade 1.2s ease both; }
 @keyframes fade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .fade-in { animation: none; } .card, .bar > i { transition: none; } }
+/* dev mode: live sensor readout for the team (?dev=1, the D key, or Settings). Clicks pass through. */
+#devpanel { position: fixed; z-index: 5; pointer-events: none; top: 76px; right: max(12px, env(safe-area-inset-right));
+  width: min(420px, calc(100vw - 24px)); padding: 10px 12px; border-radius: 14px;
+  background: rgba(5, 8, 22, 0.93); border: 1px solid var(--glass-edge); color: var(--ink-soft);
+  font: 11px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+#devpanel[hidden] { display: none; }
+#devpanel canvas { display: block; width: 100%; height: 130px; }
+#devpanel pre { margin: 6px 0 0; font: inherit; white-space: pre-wrap; }
 </style>
 </head>
 <body>
 <canvas id="scene"></canvas>
 <div id="ui"></div>
 <div class="toast pill" id="toast"></div>
+<div id="devpanel" hidden><canvas></canvas><pre></pre></div>
 <script>
 "use strict";
 /* Lantern: a calming game for patients waiting before surgery.
@@ -168,7 +177,7 @@ function connect() {
   try { ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${server}/ws`); }
   catch (_) { setTimeout(connect, 3000); return; }
   link.ws = ws;
-  ws.onopen = () => { link.connected = true; link.send({ cmd: "subscribe", samples: false }); };
+  ws.onopen = () => { link.connected = true; link.send({ cmd: "subscribe", samples: dev.on }); };
   ws.onclose = () => {
     link.connected = false; link.state = null; link.imuPresent = false; input.sleeve.valid = false;
     setTimeout(connect, 2000);
@@ -216,6 +225,117 @@ function stressBetween(t0, t1) {
 }
 const sensorReady = () => !!(link.state && link.state.phase === "ready");
 const stressNow = () => (link.state && link.state.reliable ? link.state.stress : null);
+
+// ------------------------------------------------------------------ dev mode: live sensor readout
+
+// For the team, not patients: ?dev=1, the D key, or Settings. Shows the last minute of skin
+// conductance and stress, every SCR and how it was classified, the sleeve, and what the game
+// is measuring for the current round.
+const dev = {
+  on: PARAMS.has("dev") && PARAMS.get("dev") !== "0",
+  WINDOW: 60, eda: [], states: [], scrs: [], lastDraw: 0,
+  panel: document.getElementById("devpanel"),
+  toggle(v = !this.on) {
+    this.on = v; this.panel.hidden = !v;
+    link.send({ cmd: "subscribe", samples: v });  // 10 Hz EDA only while the readout is open
+  },
+  onMsg(m) {
+    const now = clock(), keep = (arr) => { while (arr.length && now - arr[0].t > dev.WINDOW) arr.shift(); };
+    if (m.type === "hello") dev.thresholds = m.thresholds;
+    else if (m.type === "sample") { dev.eda.push({ t: now, v: m.eda }); keep(dev.eda); }
+    else if (m.type === "state") {
+      const ok = m.reliable && now - link.lastMovingAt > CFG.stillAfterMoveS;  // same rule as stressLog
+      dev.states.push({ t: now, stress: m.stress, scl: m.scl_us, ok }); keep(dev.states);
+    } else if (m.type === "scr") { dev.scrs.push({ ...m, engineT: m.t, t: now }); keep(dev.scrs); }
+  },
+  draw(now) {
+    if (!this.on || now - this.lastDraw < 0.1) return;
+    this.lastDraw = now;
+    this.chart(now);
+    this.panel.querySelector("pre").textContent = this.text(now);
+  },
+  chart(now) {
+    const cv = this.panel.querySelector("canvas"), dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    const c = cv.getContext("2d");
+    c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, w, h);
+    c.font = "10px ui-monospace, Consolas, monospace"; c.lineJoin = "round";
+    const X = (t) => w * (1 - (now - t) / this.WINDOW);
+    const split = Math.round(h * 0.58), gap = 6;
+    const line = (pts, color, width = 1.5, dash = []) => {
+      c.strokeStyle = color; c.lineWidth = width; c.setLineDash(dash); c.beginPath();
+      let pen = false;
+      for (const [x, y] of pts) { if (y == null) { pen = false; continue; } pen ? c.lineTo(x, y) : c.moveTo(x, y); pen = true; }
+      c.stroke(); c.setLineDash([]);
+    };
+    // top: EDA (10 Hz) with the tonic level (dashed) and every SCR, coloured by how it was counted
+    const vals = this.eda.map((p) => p.v).concat(this.states.map((s) => s.scl)).filter((v) => v != null);
+    c.fillStyle = "rgba(255,255,255,.04)"; c.fillRect(0, 0, w, split - gap);
+    if (vals.length) {
+      let lo = Math.min(...vals), hi = Math.max(...vals);
+      if (hi - lo < 0.05) { const m = (hi + lo) / 2; lo = m - 0.025; hi = m + 0.025; }
+      const pad = (hi - lo) * 0.1, Y = (v) => v == null ? null : (split - gap) - ((v - lo + pad) / (hi - lo + 2 * pad)) * (split - gap);
+      line(this.states.map((s) => [X(s.t), Y(s.scl)]), "#7d84b5", 1, [3, 3]);
+      line(this.eda.map((p) => [X(p.t), Y(p.v)]), "#9cc7ff");
+      for (const s of this.scrs) {
+        c.strokeStyle = s.cued ? "#ffd27a" : s.motion ? "#7d84b5" : "#ffb0c4"; c.lineWidth = 2;
+        c.beginPath(); c.moveTo(X(s.t), 0); c.lineTo(X(s.t), split - gap); c.stroke();
+      }
+      c.fillStyle = "#b9bfe6"; c.fillText(`EDA µS  ${hi.toFixed(3)}`, 4, 11); c.fillText(lo.toFixed(3), 4, split - gap - 4);
+    } else { c.fillStyle = "#7d84b5"; c.fillText("EDA: no samples yet", 4, 11); }
+    // bottom: stress index 0-100 with the enter/exit thresholds; faded where the game ignores it
+    const top = split, sh = h - split, SY = (v) => v == null ? null : top + sh - (v / 100) * sh;
+    c.fillStyle = "rgba(255,255,255,.04)"; c.fillRect(0, top, w, sh);
+    const th = this.thresholds || { enter_stressed: 55, exit_stressed: 42 };
+    for (const v of [th.exit_stressed, th.enter_stressed]) line([[0, SY(v)], [w, SY(v)]], "rgba(255,176,196,.35)", 1, [2, 4]);
+    for (let i = 1; i < this.states.length; i++) {
+      const a = this.states[i - 1], b = this.states[i];
+      line([[X(a.t), SY(a.stress)], [X(b.t), SY(b.stress)]], b.ok ? "#ffd27a" : "rgba(255,210,122,.3)", 2);
+    }
+    c.fillStyle = "#b9bfe6"; c.fillText("stress", 4, top + 11);
+  },
+  text(now) {
+    const st = link.state;
+    const f = (x, d = 2) => (x == null || Number.isNaN(+x) ? "–" : (+x).toFixed(d));
+    const sceneName = Object.entries({ Welcome, Setup, Harbor, Roots, Sight, Glow, Rest, Results, Voyage, Collection, Settings })
+      .find(([, S]) => scene && Object.getPrototypeOf(scene) === S)?.[0] || "?";
+    const L = [`DEV · ${sceneName} · ${link.connected ? (st ? st.device.source : "connecting") : "server offline"}  (D hides)`];
+    if (!st) return L.concat("waiting for the stress server…").join("\n");
+    L.push(`skin    ${st.phase} · ${st.signal} · ${st.contact ? "contact" : "no contact"} · q ${f(st.quality)}`);
+    const cal = st.calibration || {};
+    if (st.phase === "baseline") L.push(`calib   ${Math.round(100 * (cal.progress || 0))}% · ${f(cal.remaining_s, 0)} s left${cal.settling ? " · settling" : ""}`);
+    const ev = st.evidence || {};
+    L.push(`stress  ${f(st.stress, 1)} ${st.level}${st.stressed && st.level !== "stressed" ? " (stressed)" : ""} · phasic ${f(ev.phasic)} tonic ${f(ev.tonic)}`);
+    const pct = st.scl_change_pct;
+    L.push(`eda     ${f(st.eda_us, 3)} µS · scl ${f(st.scl_us, 3)} (${pct == null ? "–" : (pct > 0 ? "+" : "") + pct.toFixed(1)}%)`);
+    L.push(`        baseline scl ${f(st.baseline_scl_us, 3)} µS`);
+    const ex = st.scr_excluded || {};
+    L.push(`scr     ${f(st.scr_rate_per_min, 1)}/min (base ${f(st.baseline_scr_rate_per_min, 1)}) · skipped ${ex.cued ?? 0} cued, ${ex.motion ?? 0} motion`);
+    if (st.cue_active) L.push(`        breath cue open: next SCR is expected`);
+    for (const s of this.scrs.slice(-3).reverse()) {
+      L.push(`        ${f(now - s.t, 0).padStart(2)} s ago +${f(s.amplitude_us, 3)} µS rise ${f(s.rise_s, 1)} s ${s.cued ? "cued" : s.motion ? "motion" : "COUNTED"}`);
+    }
+    const imu = link.imu, moving = now - link.lastMovingAt < CFG.stillAfterMoveS;
+    if (link.imuPresent && imu) {
+      L.push(`sleeve  ${f(st.imu.rate_hz, 0)} Hz · ptr ${f(imu.pointer.x)}, ${f(imu.pointer.y)}${imu.pointer.valid ? "" : " not aimed"} · ${moving ? "MOVING" : imu.still ? "still" : "steady"}`);
+      L.push(`        gyro ${f(Math.hypot(...imu.gyro), 0)} °/s · lin acc ${f(Math.hypot(...imu.lin_accel), 3)} g`);
+    } else L.push(`sleeve  not streaming`);
+    // what the game's stress log would record right now (see onState)
+    const reading = !st.reliable ? "paused: signal" : moving ? "paused: moving" : "on";
+    L.push(`game    stress reading ${reading} · input ${input.source}`);
+    L.push(`        20 s median ${f(stressBetween(now - 20, now), 1)} · gentle ${f(mood.gentle)} · bloom ${save.bloom || "–"}`);
+    if (Object.getPrototypeOf(scene) === Rest) {
+      const el = now - scene.start;
+      L.push(`rest    pre ${f(scene.r.meta.pre, 1)} · post ${el < CFG.restMeasureFrom ? `starts at ${CFG.restMeasureFrom} s (${f(el, 0)} s)` : f(stressBetween(scene.start + CFG.restMeasureFrom, now), 1)}`);
+    } else if (scene && scene.meta && "pre" in scene.meta) L.push(`round   pre-round stress ${f(scene.meta.pre, 1)}`);
+    L.push(`effects ${Object.keys(ACTS).map((a) => `${a} ${save.effects[a].slice(-3).join("/") || "–"}`).join(" · ")}`);
+    return L.join("\n");
+  },
+};
+dev.panel.hidden = !dev.on;
+link.on(dev.onMsg);
+window.addEventListener("keydown", (e) => { if ((e.key === "d" || e.key === "D") && !e.repeat && !e.ctrlKey && !e.metaKey) dev.toggle(); });
 
 // ------------------------------------------------------------------ input: sleeve pointer, touch, mouse
 
@@ -1225,12 +1345,14 @@ const Settings = {
       <label>Controls <select id="mode"><option value="auto">Sleeve, or touch</option><option value="sleeve">Finger sleeve only</option><option value="touch">Touch / mouse only</option></select></label>
       <label>Sleeve sensitivity <select id="sens"><option value="35">Gentle (big movements)</option><option value="25" selected>Medium</option><option value="15">Quick (small movements)</option></select></label>
       <label>Sensor <span style="color:var(--ink-soft)">${sensor}${link.imuPresent ? " · sleeve connected" : ""}</span></label>
+      <label>Sensor readout (dev) <input type="checkbox" id="devmode" ${dev.on ? "checked" : ""} style="width:24px;height:24px"></label>
       <div class="row" style="margin-top:16px">
         <button class="btn" id="setup" ${link.imuPresent ? "" : "disabled"}>Set up the sleeve again</button>
         <button class="btn" id="reset">New patient</button>
         <button class="btn primary" id="done">Done</button></div></div><div class="spacer"></div>`);
     $("#mode").value = input.mode;
     $("#mode").onchange = (e) => input.setMode(e.target.value);
+    $("#devmode").onchange = (e) => dev.toggle(e.target.checked);
     $("#sens").onchange = (e) => link.send({ cmd: "imu_range", x_deg: +e.target.value, y_deg: Math.round(+e.target.value * 0.6) });
     $("#setup").onclick = () => go(Setup);
     $("#reset").onclick = () => {
@@ -1270,6 +1392,7 @@ function frame() {
   const v = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
   v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, `rgba(4,6,18,${0.35 + 0.2 * mood.gentle})`);
   ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  dev.draw(now);
   requestAnimationFrame(frame);
 }
 connect();

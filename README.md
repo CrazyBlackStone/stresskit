@@ -171,6 +171,12 @@ skill-based XP with a ceiling per round, so reaching dawn takes everyone a while
 speeds it up for demos. Progress is saved per device; Settings → New patient resets it and
 restarts the baseline. `scr` messages now carry `cued`, `motion` and `counted`.
 
+Dev mode (`/game?dev=1`, the D key, or Settings → Sensor readout) overlays the live sensor while
+you play: the last minute of EDA with each SCR marked (pink counted, yellow cued breath, grey hand
+moving), the stress index with its thresholds (faded while the game ignores it), and the readings
+behind the game's decisions: phase, signal, SCR rate, sleeve pointer and motion, and each round's
+pre/post stress. It is off by default, so patients never see it.
+
 ### REST (for engines that prefer polling)
 
 `GET /api/state` returns the latest state. `POST /api/command` takes a command body like
