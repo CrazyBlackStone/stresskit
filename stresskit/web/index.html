@@ -68,6 +68,11 @@ main {
 .sensor { grid-column: span 5; }
 .log { grid-column: span 7; }
 .sim { grid-column: span 12; }
+.trace { grid-column: span 12; }
+.trace-grid { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr); gap: 20px; align-items: start; }
+.trace-canvas canvas { aspect-ratio: 1; height: auto; border-radius: 10px; background: var(--surface-2); }
+select { font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--ink); }
+@media (max-width: 760px) { .trace-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 980px) {
   .hero, .calib, .tiles, .sensor, .log { grid-column: span 12; }
   .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -242,6 +247,40 @@ canvas { display: block; width: 100%; }
     <ul class="events" id="events"></ul>
   </section>
 
+  <section class="card trace" id="traceCard" hidden>
+    <div class="chart-head">
+      <h2>Finger tracing (IMU)</h2>
+      <span class="chip" id="chipStill"><span class="dot"></span><span>—</span></span>
+    </div>
+    <div class="trace-grid">
+      <div class="canvas-wrap trace-canvas"><canvas id="traceCanvas"></canvas></div>
+      <div>
+        <p class="note" style="margin-top:0">Point the finger with the board at the screen and move it like a laser pointer.
+          Left/right = turning, up/down = tilting. Last 4 s shown.</p>
+        <div class="buttons">
+          <button id="btnRecenter" class="primary" title="Make the current aim the centre">Recenter</button>
+          <button id="btnTraceClear">Clear trail</button>
+          <button id="btnForward" title="Teach which way the board points along your finger">Set pointing axis…</button>
+        </div>
+        <div class="buttons">
+          <label class="sub" for="rangeSel">Sensitivity</label>
+          <select id="rangeSel">
+            <option value="15,9">high (±15°)</option><option value="25,15" selected>medium (±25°)</option><option value="40,25">low (±40°)</option>
+          </select>
+          <label class="sub" for="axisSel">Pointing axis</label>
+          <select id="axisSel"><option value="">custom</option><option>+x</option><option>-x</option><option>+y</option><option>-y</option><option>+z</option><option>-z</option></select>
+        </div>
+        <dl class="kv">
+          <dt>Cursor</dt><dd id="iPtr">—</dd>
+          <dt>Accel (g)</dt><dd id="iAcc">—</dd>
+          <dt>Gyro (°/s)</dt><dd id="iGyr">—</dd>
+          <dt>Roll / pitch / yaw</dt><dd id="iEul">—</dd>
+          <dt>IMU</dt><dd id="iStat">—</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
   <section class="card sim" id="simCard" hidden>
     <h2>Simulator</h2>
     <div class="simrow">
@@ -250,6 +289,8 @@ canvas { display: block; width: 100%; }
       <span id="simStressVal">auto</span>
       <button id="simLift">Lift fingers</button>
       <button id="simAuto">Back to scripted scenario</button>
+      <label for="simMotion">Finger motion</label>
+      <select id="simMotion"><option value="auto">auto</option><option value="figure8">figure-8</option><option value="circle">circle</option><option value="still">still</option></select>
       <span class="sub" id="simSeg"></span>
     </div>
   </section>
@@ -287,7 +328,9 @@ const css = (name) => getComputedStyle(document.documentElement).getPropertyValu
 
 // ------------------------------------------------------------------ data
 const HISTORY_S = 190;
-const data = { samples: [], stress: [], refs: [], scrs: [], marks: [] };
+const data = { samples: [], stress: [], refs: [], scrs: [], marks: [], trail: [] };
+const TRAIL_S = 4;
+let lastImu = null, lastImuUi = 0;
 let state = null, windowS = 120, hello = null;
 
 function trim(arr, now) { while (arr.length && now - arr[0].time > HISTORY_S) arr.shift(); }
@@ -326,6 +369,8 @@ function handle(m) {
       break;
     case "sample":
       data.samples.push(m); trim(data.samples, m.time); scheduleDraw(); break;
+    case "imu":
+      onImu(m); break;
     case "state":
       applyState(m); break;
     case "scr":
@@ -463,6 +508,16 @@ function applyState(s) {
   else if (!s.contact && sen.u !== null && sen.u_open !== null && sen.u < sen.u_open - 0.002) advice = "Reading is close to the fingers-off level. If the straps are on, check that both metal pads touch skin and the cable is fully plugged in.";
   else if (s.contact && sen.u !== null && sen.u > 0.9) advice = "Reading is near the top of the range: very low conductance. Slightly moist fingertips help dry electrodes make contact.";
   adv.textContent = advice; adv.style.display = advice ? "block" : "none";
+
+  // finger tracing
+  const imu = s.imu || {};
+  $("traceCard").hidden = !imu.present;
+  if (imu.present) {
+    $("iStat").textContent = `${imu.streaming ? `${fmt(imu.rate_hz, 0)} Hz` : "not streaming"} · gyro ${imu.gyro_calibrated ? "calibrated" : "calibrating (hold still)"} · axis [${imu.forward.map((c) => c.toFixed(2)).join(", ")}]`;
+    const ax = Object.entries({ "+x": [1, 0, 0], "-x": [-1, 0, 0], "+y": [0, 1, 0], "-y": [0, -1, 0], "+z": [0, 0, 1], "-z": [0, 0, -1] })
+      .find(([, v]) => v.every((c, i) => Math.abs(c - imu.forward[i]) < 1e-3));
+    if (document.activeElement !== $("axisSel")) $("axisSel").value = ax ? ax[0] : "";
+  }
 
   // sim
   if (s.device && s.device.sim) {
@@ -638,6 +693,71 @@ $("btnOpen").onclick = () => { if (confirm("Take your fingers OFF the electrodes
 $("simStress").oninput = (e) => send("sim", { stress: e.target.value / 100 });
 $("simLift").onclick = () => send("sim", { contact: state && state.device && state.device.sim && state.device.sim.contact === false ? true : false });
 $("simAuto").onclick = () => send("sim", { auto: true });
+
+// ------------------------------------------------------------------ finger tracing
+let traceQueued = false;
+function onImu(m) {
+  lastImu = m;
+  data.trail.push({ time: m.time, x: m.pointer.x, y: m.pointer.y, valid: m.pointer.valid });
+  while (data.trail.length && m.time - data.trail[0].time > TRAIL_S) data.trail.shift();
+  if (!traceQueued) { traceQueued = true; requestAnimationFrame(() => { traceQueued = false; drawTrace(); }); }
+  if (m.time - lastImuUi < 0.1) return;  // text readouts at 10 Hz is plenty
+  lastImuUi = m.time;
+  const f = (v, d = 2) => (v >= 0 ? " " : "") + v.toFixed(d);
+  $("iPtr").textContent = m.pointer.valid
+    ? `x ${f(m.pointer.x)}, y ${f(m.pointer.y)} (aim ${f(m.aim_deg.x, 1)}°, ${f(m.aim_deg.y, 1)}°)`
+    : "not centred yet: aim at the screen and hold still, or press Recenter";
+  $("iAcc").textContent = m.accel.map((v) => f(v, 3)).join("  ");
+  $("iGyr").textContent = m.gyro.map((v) => f(v, 1)).join("  ");
+  $("iEul").textContent = `${f(m.euler_deg.roll, 1)}°  ${f(m.euler_deg.pitch, 1)}°  ${f(m.euler_deg.yaw, 1)}°`;
+  const chip = $("chipStill");
+  chip.querySelector(".dot").className = "dot " + (m.still ? "good" : "warning");
+  chip.lastElementChild.textContent = m.still ? "still" : "moving";
+}
+function drawTrace() {
+  const c = $("traceCanvas"), dpr = window.devicePixelRatio || 1, size = c.clientWidth;
+  if (!size) return;
+  if (c.width !== Math.round(size * dpr)) { c.width = c.height = Math.round(size * dpr); }
+  const ctx = c.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const P = (v) => (v + 1) / 2 * (size - 16) + 8;  // [-1, 1] -> px with an 8 px margin
+  ctx.clearRect(0, 0, size, size);
+  ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1;
+  for (const v of [-0.5, 0.5]) {
+    ctx.beginPath(); ctx.moveTo(P(v), 8); ctx.lineTo(P(v), size - 8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(8, P(v)); ctx.lineTo(size - 8, P(v)); ctx.stroke();
+  }
+  ctx.strokeStyle = css("--axis");
+  ctx.beginPath(); ctx.moveTo(P(0), 8); ctx.lineTo(P(0), size - 8); ctx.moveTo(8, P(0)); ctx.lineTo(size - 8, P(0)); ctx.stroke();
+  const now = data.trail.length ? data.trail[data.trail.length - 1].time : 0;
+  ctx.strokeStyle = css("--series-1"); ctx.lineWidth = 2; ctx.lineCap = "round";
+  for (let i = 1; i < data.trail.length; i++) {
+    const a = data.trail[i - 1], b = data.trail[i];
+    if (!a.valid || !b.valid) continue;
+    ctx.globalAlpha = Math.max(0.05, 1 - (now - b.time) / TRAIL_S);
+    ctx.beginPath(); ctx.moveTo(P(a.x), P(-a.y)); ctx.lineTo(P(b.x), P(-b.y)); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  const last = data.trail[data.trail.length - 1];
+  if (last && last.valid) {
+    ctx.beginPath(); ctx.arc(P(last.x), P(-last.y), 6, 0, 2 * Math.PI);
+    ctx.fillStyle = css("--series-2"); ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = css("--surface"); ctx.stroke();
+  }
+}
+$("btnRecenter").onclick = async () => {
+  const r = await sendAwait("imu_recenter");
+  logEvent(Date.now() / 1000, r.ok ? "Tracing: recentred" : `Recenter failed: ${r.error}`);
+};
+$("btnTraceClear").onclick = () => { data.trail = []; drawTrace(); };
+$("btnForward").onclick = async () => {
+  if (!confirm("Point the finger wearing the board straight at the CEILING and hold it still, then press OK.")) return;
+  const r = await sendAwait("imu_forward", { axis: "point_up" });
+  logEvent(Date.now() / 1000, r.ok
+    ? `Tracing: pointing axis set to [${r.forward.map((c) => c.toFixed(2)).join(", ")}]. Now aim at the screen and hold still to centre.`
+    : `Pointing axis not set: ${r.error}`);
+};
+$("axisSel").onchange = (e) => { if (e.target.value) send("imu_forward", { axis: e.target.value }); };
+$("rangeSel").onchange = (e) => { const [x, y] = e.target.value.split(",").map(Number); send("imu_range", { x_deg: x, y_deg: y }); };
+$("simMotion").onchange = (e) => send("sim", { motion: e.target.value });
 
 // ------------------------------------------------------------------ stress test (personal reference)
 const TASK_S = 90, ANSWER_S = 6, STEP = 13;

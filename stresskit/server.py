@@ -3,7 +3,8 @@
     GET  /             live dashboard
     GET  /ws           WebSocket: JSON messages (see README), send {"cmd": ...} to control
     GET  /api/state    latest state snapshot (for engines that prefer polling)
-    POST /api/command  {"cmd": "calibrate" | "reference_start" | ...}
+    GET  /api/imu      latest IMU / finger-tracing sample
+    POST /api/command  {"cmd": "calibrate" | "reference_start" | "imu_recenter" | ...}
 """
 
 from __future__ import annotations
@@ -20,10 +21,11 @@ from typing import Any, Callable
 from aiohttp import WSMsgType, web
 
 from . import __version__, conversion
-from .device import Sample, SerialReader
+from .device import ImuSample, Sample, SerialReader
 from .engine import EngineConfig, Profile, StressEngine
+from .motion import AXES, MotionTracker
 from .replay import read_csv
-from .sim import EDASimulator
+from .sim import EDASimulator, MotionSimulator
 
 log = logging.getLogger("stresskit")
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -50,6 +52,9 @@ class Recorder:
         self._markers.append(text.replace(",", ";"))
 
     def write(self, s: Sample, eng: StressEngine) -> None:
+        if self._f.closed:  # a sample queued by the serial thread can land after shutdown
+            return
+
         def f(x, nd=4):
             return "" if x is None or x != x else f"{x:.{nd}f}"
         scl = eng._tonic.median() if len(eng._tonic) else None
@@ -67,19 +72,50 @@ class Recorder:
         self._f.close()
 
 
+class ImuRecorder:
+    """Raw IMU plus the tracing cursor, one row per IMU sample (~104 Hz)."""
+
+    COLS = ["host_time", "t", "ax", "ay", "az", "gx", "gy", "gz", "px", "py", "valid", "still"]
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._f = path.open("w", newline="")
+        self._w = csv.writer(self._f)
+        self._w.writerow(self.COLS)
+        self._n = 0
+
+    def write(self, s: ImuSample, msg: dict) -> None:
+        if self._f.closed:
+            return
+        p = msg["pointer"]
+        self._w.writerow([f"{s.host_time:.3f}", f"{s.t:.6f}", *(f"{v:.4f}" for v in s.accel),
+                          *(f"{v:.3f}" for v in s.gyro), p["x"], p["y"], int(p["valid"]), int(msg["still"])])
+        self._n += 1
+        if self._n % 100 == 0:
+            self._f.flush()
+
+    def close(self) -> None:
+        self._f.close()
+
+
 class Hub:
     """Owns the engine; fans results out to WebSocket clients. Runs entirely on the event loop."""
 
-    def __init__(self, engine: StressEngine, recorder: Recorder | None, source: str):
+    def __init__(self, engine: StressEngine, recorder: Recorder | None, source: str,
+                 imu_recorder: ImuRecorder | None = None):
         self.engine = engine
         self.recorder = recorder
+        self.imu_recorder = imu_recorder
         self.source = source
         self.device_status = "starting"
-        self.clients: set[asyncio.Queue] = set()
+        self.clients: dict[asyncio.Queue, dict] = {}  # queue -> subscription prefs
         self.history: deque[dict] = deque()
         self.recent_events: deque[dict] = deque(maxlen=200)
         self.sim: EDASimulator | None = None
+        self.motion_sim: MotionSimulator | None = None
+        self.motion = MotionTracker(forward=engine.profile.imu_forward or AXES["+x"])
         self.last_sample_at = 0.0
+        self.last_imu_at = 0.0
         self._t_offset: float | None = None
         self._next_state = 0.0
 
@@ -112,6 +148,14 @@ class Hub:
             self._next_state = now + 1.0 / STATE_HZ
             self.broadcast(self.state())
 
+    def on_imu(self, s: ImuSample) -> None:
+        msg = self.motion.update(s)
+        self.last_imu_at = s.host_time
+        msg["time"] = round(s.host_time, 3)
+        if self.imu_recorder:
+            self.imu_recorder.write(s, msg)
+        self.broadcast(msg)
+
     def set_status(self, status: str) -> None:
         self.device_status = status
         log.info("device: %s", status)
@@ -132,18 +176,27 @@ class Hub:
                 "segment": self.sim.label,
                 "stress": self.sim.manual_stress,
                 "contact": self.sim.manual_contact,
+                "motion": self.motion_sim.current_pattern() if self.motion_sim else None,
             }
+        snap["imu"] = {
+            "present": self.last_imu_at > 0,
+            "streaming": time.time() - self.last_imu_at < 1.0,
+            **self.motion.status(),
+        }
         return snap
 
     def broadcast(self, msg: dict) -> None:
+        kind = msg.get("type")
         dead = []
-        for q in self.clients:
+        for q, prefs in self.clients.items():
+            if (kind == "imu" and not prefs["imu"]) or (kind == "sample" and not prefs["samples"]):
+                continue
             try:
                 q.put_nowait(msg)
             except asyncio.QueueFull:
                 dead.append(q)  # client stopped reading; drop it rather than buffer forever
         for q in dead:
-            self.clients.discard(q)
+            self.clients.pop(q, None)
 
     def hello(self) -> dict:
         cfg = self.engine.cfg
@@ -193,6 +246,25 @@ class Hub:
                 self.recorder.mark(f"mark:{label}")
             self.broadcast({"type": "mark", "time": round(time.time(), 3), "t": round(eng.t, 2), "label": label})
             result = {"ok": True}
+        elif cmd == "imu_recenter":
+            result = self.motion.recenter()
+        elif cmd == "imu_forward":
+            axis = msg.get("axis", "point_up")
+            if axis == "point_up":
+                result = self.motion.forward_from_gravity()
+            elif isinstance(axis, str) and axis in AXES or isinstance(axis, list) and len(axis) == 3:
+                result = self.motion.set_forward(axis)
+            else:
+                return {"ok": False, "error": "axis must be 'point_up', one of +x -x +y -y +z -z, or [x, y, z]"}
+            if result["ok"]:
+                eng.profile.imu_forward = result["forward"]
+                eng._profile_changed()
+        elif cmd == "imu_range":
+            if "x_deg" in msg:
+                self.motion.cfg.range_x_deg = max(2.0, float(msg["x_deg"]))
+            if "y_deg" in msg:
+                self.motion.cfg.range_y_deg = max(2.0, float(msg["y_deg"]))
+            result = {"ok": True, **self.motion.status()["range_deg"]}
         elif cmd == "sim":
             if self.sim is None:
                 return {"ok": False, "error": "not running the simulator"}
@@ -200,8 +272,12 @@ class Hub:
                 self.sim.manual_stress = None if msg["stress"] is None else max(0.0, min(1.0, float(msg["stress"])))
             if "contact" in msg:
                 self.sim.manual_contact = None if msg["contact"] is None else bool(msg["contact"])
+            if msg.get("motion") in ("auto", "still", "figure8", "circle") and self.motion_sim:
+                self.motion_sim.pattern = msg["motion"]
             if msg.get("auto"):
                 self.sim.manual_stress = self.sim.manual_contact = None
+                if self.motion_sim:
+                    self.motion_sim.pattern = "auto"
             result = {"ok": True}
         elif cmd == "state":
             return {"ok": True, "state": self.state()}
@@ -223,6 +299,15 @@ async def run_sim(hub: Hub, sim: EDASimulator, speed: float) -> None:
         t, counts, sd = sim.step()
         hub.on_sample(Sample(t, counts, sd, sim.full_scale, time.time()))
         next_t += period / speed
+        await asyncio.sleep(max(0.0, next_t - time.monotonic()))
+
+
+async def run_motion_sim(hub: Hub, sim: MotionSimulator, speed: float) -> None:
+    hub.motion_sim = sim
+    next_t = time.monotonic()
+    while True:
+        hub.on_imu(sim.step(time.time()))
+        next_t += sim.dt / speed
         await asyncio.sleep(max(0.0, next_t - time.monotonic()))
 
 
@@ -259,6 +344,9 @@ def build_app(hub: Hub) -> web.Application:
     async def api_state(_: web.Request) -> web.Response:
         return web.json_response(hub.state())
 
+    async def api_imu(_: web.Request) -> web.Response:
+        return web.json_response(hub.motion.last or {"type": "imu", "present": False})
+
     async def api_command(request: web.Request) -> web.Response:
         try:
             msg = await request.json()
@@ -273,8 +361,9 @@ def build_app(hub: Hub) -> web.Application:
         ws = web.WebSocketResponse(heartbeat=20.0)
         await ws.prepare(request)
         queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+        prefs = {"imu": True, "samples": True}
         await ws.send_json(hub.hello())
-        hub.clients.add(queue)
+        hub.clients[queue] = prefs
 
         async def pump() -> None:
             while True:
@@ -287,12 +376,18 @@ def build_app(hub: Hub) -> web.Application:
                     continue
                 try:
                     data = json.loads(msg.data)
-                    reply = hub.command(data)
+                    if data.get("cmd") == "subscribe":  # per-connection: {"imu": false} drops the 104 Hz stream
+                        for key in prefs:
+                            if key in data:
+                                prefs[key] = bool(data[key])
+                        reply = {"ok": True, **prefs}
+                    else:
+                        reply = hub.command(data)
                 except (json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
                     data, reply = {}, {"ok": False, "error": str(exc)}
                 await ws.send_json({"type": "ack", "cmd": data.get("cmd"), "id": data.get("id"), **reply})
         finally:
-            hub.clients.discard(queue)
+            hub.clients.pop(queue, None)
             sender.cancel()
         return ws
 
@@ -300,6 +395,7 @@ def build_app(hub: Hub) -> web.Application:
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/api/state", api_state)
+    app.router.add_get("/api/imu", api_imu)
     app.router.add_post("/api/command", api_command)
     app.router.add_route("OPTIONS", "/api/command", api_state)
     return app
@@ -320,12 +416,15 @@ async def serve(
 ) -> None:
     profile = Profile() if sim else Profile.load(profile_path)
     engine = StressEngine(config, profile, on_profile_change=None if sim else (lambda p: p.save(profile_path)))
-    recorder = None
+    recorder = imu_recorder = None
     if record:
         tag = "sim" if sim else "replay" if replay else "session"
-        recorder = Recorder(data_dir / time.strftime(f"{tag}-%Y%m%d-%H%M%S.csv"))
+        stem = time.strftime(f"{tag}-%Y%m%d-%H%M%S")
+        recorder = Recorder(data_dir / f"{stem}.csv")
+        if not replay:
+            imu_recorder = ImuRecorder(data_dir / f"{stem}-imu.csv")
     source = "simulator" if sim else f"replay:{replay.name}" if replay else "serial"
-    hub = Hub(engine, recorder, source)
+    hub = Hub(engine, recorder, source, imu_recorder)
 
     app = build_app(hub)
     runner = web.AppRunner(app, access_log=None)
@@ -341,6 +440,7 @@ async def serve(
     reader: SerialReader | None = None
     if sim:
         tasks.append(asyncio.create_task(run_sim(hub, EDASimulator(), speed)))
+        tasks.append(asyncio.create_task(run_motion_sim(hub, MotionSimulator(), speed)))
     elif replay:
         tasks.append(asyncio.create_task(run_replay(hub, replay, speed)))
     else:
@@ -348,6 +448,7 @@ async def serve(
             lambda s: loop.call_soon_threadsafe(hub.on_sample, s),
             lambda msg: loop.call_soon_threadsafe(hub.set_status, msg),
             port=port,
+            on_imu=lambda s: loop.call_soon_threadsafe(hub.on_imu, s),
         )
         reader.start()
 
@@ -369,4 +470,6 @@ async def serve(
             reader.stop()
         if recorder:
             recorder.close()
+        if imu_recorder:
+            imu_recorder.close()
         await runner.cleanup()

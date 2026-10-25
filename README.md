@@ -33,9 +33,10 @@ the simulated stress level in the dashboard. It's ideal for building the game.
 | black (GND) | GND |
 | white | unconnected (Grove "NC"). Putting this on A5 gives a floating, meaningless reading. |
 
-Straps go on the middle segments of the **index and middle finger of the non-dominant hand**, with
-the metal pads against the skin. Keep that hand still on the desk and type or play with the other
-hand. Hand movement causes artifacts (most are rejected automatically, but not all).
+The XIAO is worn on the **index finger** for finger tracing (see below). Straps go on the middle
+segments of two fingers, metal pads against the skin. Ideally put them on the other hand and keep
+it still; otherwise use the middle and ring fingers with snug straps. Moving electrodes cause
+artifacts (most are rejected automatically, but not all).
 
 Dry nickel electrodes need a few minutes to "wet in": conductance can double in the first minutes.
 The engine copes with that, but slightly moist fingertips speed it up.
@@ -44,8 +45,9 @@ The engine copes with that, but slightly moist fingertips speed it up.
 
 `firmware/gsr_stream/gsr_stream.ino` samples A5 at 500 Hz and averages 50 readings into each
 10 Hz sample. A 100 ms window cancels both 50 Hz and 60 Hz mains hum. It prints
-`millis,mean_counts,std_counts` lines (`#` lines are metadata; send `i` to reprint them). To
-re-flash:
+`millis,mean_counts,std_counts` lines. On the Sense board it also streams the IMU as
+`I,micros,ax,ay,az,gx,gy,gz` raw int16 lines at 104 Hz. `#` lines are metadata, including the
+IMU scale factors; send `i` to reprint them. To re-flash:
 
 ```powershell
 .\.venv\Scripts\python.exe firmware\flash.py        # compile + upload, auto-detects the board
@@ -132,6 +134,22 @@ async def main():
                 print(m["stress"], m["level"])
 asyncio.run(main())
 ```
+
+### Finger tracing (IMU)
+
+The XIAO Sense's 6-axis IMU streams at about 100 Hz as `imu` messages. The tracker
+(`stresskit/motion.py`) fuses gyro and accelerometer into the finger's pointing direction and
+exposes a laser-pointer-style cursor: `pointer.x` / `pointer.y` in −1…1, with x to the right and
+y up. Double-integrating acceleration into position would drift within seconds.
+
+Set-up:
+1. Point the finger at the ceiling and send `{"cmd":"imu_forward","axis":"point_up"}`, or use the
+   dashboard's "Set pointing axis…".
+2. Aim at the screen centre and hold still: it auto-centres. Or send `imu_recenter`.
+
+Messages also carry the raw `accel` (g) and bias-free `gyro` (°/s), `lin_accel`, `quat` and
+`still`. `GET /api/imu` returns the latest one. Send `{"cmd":"subscribe","imu":false}` to stop the
+stream on a connection. HANDOFF.md has the full field list.
 
 ### REST (for engines that prefer polling)
 

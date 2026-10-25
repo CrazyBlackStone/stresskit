@@ -105,6 +105,7 @@ class Profile:
     tonic_full: float | None = None  # personalized from the stress reference
     rate_full: float | None = None
     reference: dict | None = None
+    imu_forward: list[float] | None = None  # board-frame direction the finger points (finger tracing)
 
     @classmethod
     def load(cls, path: str | Path) -> "Profile":

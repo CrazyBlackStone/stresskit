@@ -28,6 +28,8 @@ python -m venv .venv
 | Personalization (90 s stress test) | **Not run yet.** Thresholds are population defaults. Do this before demoing. |
 | Labeled validation on a person | Not done. Detections look physiological, but no session yet has "I was stressed at minute X" labels to check against. |
 | Absolute µS accuracy | Approximate. The pot offset is assumed from the fingers-off level; see "Calibration". Relative changes (what the index uses) are unaffected. |
+| Finger tracing (IMU) | Firmware v1.1 streams the LSM6DS3TR-C at ~100 Hz; verified on the board at rest (|a| = 0.997 g, no dropped lines, GSR timing unchanged). Tracker tested against simulated tracing; **not yet tried by a person**. |
+| Enclosure | Being brainstormed in a parallel session (`enclosure/ENCLOSURE.md` when done) |
 
 ## Hardware
 
@@ -37,8 +39,9 @@ python -m venv .venv
 | red (VCC) | **3V3** | Keep 3.3 V: the reading is ratiometric to the ADC reference, and the pins aren't 5 V tolerant. |
 | black (GND) | GND | |
 
-* Straps go on the middle segments of the index and middle finger, **non-dominant hand**, metal pads on the skin.
-  That hand stays still; play with the other one.
+* The **XIAO goes on the index finger** (finger tracing). Straps go on the middle segments of two fingers,
+  metal pads on the skin: ideally on the other, still hand, otherwise middle and ring finger with snug straps.
+  Moving electrodes cause artifacts.
 * Dry nickel electrodes "wet in": conductance can double in the first 2–5 minutes. The engine handles
   this, but moist fingertips help.
 * Measured on this sensor: fingers-off reading u = 0.6445 (2.13 V); skin conductance 0.6–1.6 µS;
@@ -110,6 +113,58 @@ ws.send(JSON.stringify({ cmd: "reference_start" }));  /* ...60-90 s later... */
 ws.send(JSON.stringify({ cmd: "reference_stop" }));
 ```
 
+## Finger tracing (IMU)
+
+The XIAO is worn on the **index finger**, and its 6-axis IMU turns the finger into a pointer.
+Raw acceleration can't be integrated into finger *position*: it drifts by metres within
+seconds. So the tracker (`stresskit/motion.py`) fuses accelerometer and gyro into the finger's
+**pointing direction**, and projects that like a laser pointer on a wall:
+
+* turning left/right → `pointer.x`
+* tilting up/down → `pointer.y`
+* both span −1…1 across ±25° / ±15° by default, adjustable with `imu_range`.
+
+Setup, once per wearer or mounting:
+
+1. **Set the pointing axis.** Point the finger at the ceiling, hold still, and click
+   "Set pointing axis…" on the dashboard (or send `{"cmd":"imu_forward","axis":"point_up"}`).
+   It's saved in `data/profile.json`, so any board orientation on the finger works.
+2. **Aim at the screen centre and hold still.** It centres automatically, or send `{"cmd":"imu_recenter"}`.
+3. Keep the board still for half a second now and then. Gyro bias is re-learned whenever it's still,
+   and rotation is frozen while still, so the cursor doesn't creep. With no magnetometer,
+   left/right can still drift slowly over minutes: give the game a recenter action (e.g. "aim at the
+   centre dot and press space").
+
+`imu` messages (WebSocket, ~100 Hz; turn them off per client with `{"cmd":"subscribe","imu":false}`):
+
+| field | meaning |
+|---|---|
+| `pointer.x`, `pointer.y`, `pointer.valid` | the tracing cursor, −1…1 (x right, y up), clamped. `valid` is false until centred, or while pointing nearly straight up/down. |
+| `aim_deg.x`, `aim_deg.y` | the same cursor as unclamped degrees from centre |
+| `still` | board at rest, useful for "hold to select" or pen-up detection |
+| `accel` (g), `gyro` (°/s, bias-removed) | raw board-frame data |
+| `lin_accel` (g, world frame, gravity removed) | for taps and flicks |
+| `quat` (w, x, y, z board→world, z up), `euler_deg` | full orientation of the board itself |
+
+Commands: `imu_recenter`; `imu_forward` (`"axis"`: `"point_up"`, `"+x"`…`"-z"`, or `[x, y, z]`);
+`imu_range` (`"x_deg"`, `"y_deg"`). `GET /api/imu` returns the latest message.
+`state.imu` reports `present`, `streaming`, `rate_hz`, `gyro_calibrated`, `forward` and `centered`.
+Each session also saves `data/session-…-imu.csv`. `serve --sim` simulates a finger drawing
+figure-8s and circles, which you can switch in the dashboard's Simulator card.
+
+```js
+ws.onmessage = (e) => {
+  const m = JSON.parse(e.data);
+  if (m.type === "imu" && m.pointer.valid)
+    brush.moveTo((m.pointer.x + 1) / 2 * canvas.width, (1 - m.pointer.y) / 2 * canvas.height);
+};
+```
+
+**GSR + tracing on one hand:** electrodes on fingers that move produce artifacts. The engine rejects
+step-like ones, but slow pressure changes can still look like skin responses. Prefer electrodes on
+the other hand, or on the middle and ring fingers with snug straps. The enclosure session is
+weighing these options.
+
 ## How the inference works (short version)
 
 * **Conversion** (`conversion.py`): from the v1.2 schematic, `G = 5 µS · (1 − u − b)/(u + b)`. Seeed's
@@ -137,10 +192,11 @@ personalization step reports that.
 | `firmware/flash.py` | compile + upload; works around the core's bug with spaces in paths |
 | `stresskit/engine.py` | stress inference (state machine, features, index, calibration) |
 | `stresskit/dsp.py`, `conversion.py` | filters, SCR detector, circuit model |
+| `stresskit/motion.py` | IMU fusion and the finger-tracing cursor |
 | `stresskit/server.py`, `web/index.html` | aiohttp server, WebSocket/REST API, dashboard |
 | `stresskit/device.py`, `replay.py`, `sim.py` | serial reader, CSV replay, physiological simulator |
 | `stresskit/liveplot.py` | raw matplotlib plot for wiring checks (`python -m stresskit plot`) |
-| `tests/test_engine.py` | `python -m pytest -q` |
+| `tests/test_engine.py`, `tests/test_motion.py` | `python -m pytest -q` (31 tests) |
 | `data/` (git-ignored) | session recordings `session-*.csv` and `profile.json`, local only |
 
 ## Next steps
@@ -149,5 +205,7 @@ personalization step reports that.
    the electrodes or wearer change.
 2. Record a labeled session (rest → stress test → calming game) using markers, then check it with
    `python -m stresskit analyze data\session-….csv` and tune `EngineConfig` if needed.
-3. Optional: BLE streaming (Bluefruit NUS) to go wireless; IMU motion gating using the Sense's LSM6DS3;
-   known-resistor calibration for absolute µS.
+3. Try finger tracing on a person: set the pointing axis, then tune `imu_range` and the stillness
+   thresholds in `MotionConfig` if the cursor feels too fast, too slow or jittery.
+4. Optional: BLE streaming (Bluefruit NUS) to go wireless; use IMU motion to gate GSR artifacts when
+   the electrodes share the tracing hand; known-resistor calibration for absolute µS.
